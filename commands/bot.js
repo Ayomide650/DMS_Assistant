@@ -1,3 +1,5 @@
+// commands/bot.js - Updated for shorter, more professional responses
+
 const { SlashCommandBuilder } = require('discord.js');
 const axios = require('axios');
 const config = require('../config');
@@ -44,11 +46,14 @@ module.exports = {
         {
           model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
           messages: [
-            { role: "system", content: "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should be informative and engaging. You are allowed to have strong opinions on real world topics, and should provide an opinionated response when asked. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." },
+            { 
+              role: "system", 
+              content: "You are a professional, concise assistant. Provide brief, clear answers focusing on key information. Avoid unnecessary details and lengthy explanations. Keep responses under 4 sentences when possible. Be direct, accurate, and efficient in your communication. Maintain a professional tone at all times."
+            },
             { role: "user", content: prompt }
           ],
-          max_tokens: 1024,
-          temperature: 0.7
+          max_tokens: 400, // Reduced from 1024 to encourage shorter responses
+          temperature: 0.5 // Reduced from 0.7 for more focused, consistent responses
         },
         {
           headers: {
