@@ -1,7 +1,8 @@
-const { Client, GatewayIntentBits, Collection, Events } = require('discord.js');
+const { Client, Events, GatewayIntentBits, Collection } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { token, primaryChannelId } = require('./config');
+const config = require('./config');
+const { keepAlive } = require('./server');
 
 // Create a new client instance
 const client = new Client({
@@ -9,75 +10,101 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
+// Command handling setup
 client.commands = new Collection();
-
-// Load commands
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
 for (const file of commandFiles) {
   const filePath = path.join(commandsPath, file);
   const command = require(filePath);
-  client.commands.set(command.data.name, command);
+  
+  // Set a new item in the Collection with the key as the command name and the value as the exported module
+  if ('data' in command && 'execute' in command) {
+    client.commands.set(command.data.name, command);
+  } else {
+    console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
+  }
 }
 
-// When the client is ready, run this code
-client.once(Events.ClientReady, (readyClient) => {
-  console.log(`Ready! Logged in as ${readyClient.user.tag}`);
-  console.log(`Primary channel set to: ${primaryChannelId}`);
+// When the client is ready, run this code (only once)
+client.once(Events.ClientReady, c => {
+  console.log(`Ready! Logged in as ${c.user.tag}`);
 });
 
-// Listen for interactions (slash commands)
+// Event handler for slash commands
 client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isCommand()) return;
+  if (!interaction.isChatInputCommand()) return;
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+  const command = interaction.client.commands.get(interaction.commandName);
+
+  if (!command) {
+    console.error(`No command matching ${interaction.commandName} was found.`);
+    return;
+  }
 
   try {
     await command.execute(interaction);
   } catch (error) {
     console.error(error);
-    await interaction.reply({ 
-      content: 'There was an error executing this command!', 
-      ephemeral: true 
-    });
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: 'There was an error while executing this command!', ephemeral: true });
+    } else {
+      await interaction.reply({ content: 'There was an error while executing this command!', ephemeral: true });
+    }
   }
 });
 
-// Message-based command processing
+// Message handling
 client.on(Events.MessageCreate, async message => {
-  // Ignore messages from the bot itself
+  // Ignore bot messages
   if (message.author.bot) return;
-
-  // Get the GPT command
-  const command = client.commands.get('gpt');
-  if (!command) return;
-
-  // Check if message is in the primary channel
-  if (message.channelId === primaryChannelId) {
-    // In primary channel: respond to all messages
+  
+  // Check if the bot is mentioned or if the message is in the active channel
+  const botMentioned = message.mentions.users.has(client.user.id);
+  const isActiveChannel = message.channelId === config.ACTIVE_CHANNEL_ID;
+  
+  // Only respond if the bot is mentioned or the message is in the active channel
+  if (isActiveChannel || botMentioned) {
     try {
-      await command.handleMessageCommand(message, message.content.split(/ +/));
+      // Let the user know the bot is thinking
+      const thinkingMessage = await message.channel.send('Thinking...');
+      
+      // Process the message
+      const messageContent = botMentioned 
+        ? message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim()
+        : message.content;
+      
+      // Import the bot's response handling from commands/bot.js
+      const botCommand = require('./commands/bot');
+      const response = await botCommand.generateResponse(messageContent);
+      
+      // Delete the thinking message and send the response
+      await thinkingMessage.delete();
+      
+      // Split long messages if needed (Discord has a 2000 character limit)
+      if (response.length <= 2000) {
+        await message.reply(response);
+      } else {
+        // Split into chunks of 2000 characters
+        const chunks = response.match(/.{1,2000}/g) || [];
+        for (const chunk of chunks) {
+          await message.channel.send(chunk);
+        }
+      }
     } catch (error) {
-      console.error(error);
-      await message.reply('There was an error processing your request!');
-    }
-  } 
-  // If not in primary channel, only respond when mentioned
-  else if (message.mentions.has(client.user)) {
-    try {
-      // Remove the mention from the message content
-      const content = message.content.replace(/<@!?(\d+)>/g, '').trim();
-      await command.handleMessageCommand(message, content.split(/ +/));
-    } catch (error) {
-      console.error(error);
-      await message.reply('There was an error processing your request!');
+      console.error('Error responding to message:', error);
+      await message.reply('Sorry, I encountered an error while processing your message.');
     }
   }
 });
 
-// Login to Discord with your client's token
-client.login(token);
+// Start the keep-alive server for hosting on Render
+keepAlive();
+
+// Log in to Discord with your client's token
+client.login(config.BOT_TOKEN);
