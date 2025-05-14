@@ -5,7 +5,7 @@ const config = require('../config');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('ask')
-    .setDescription('Ask the Ollama AI a question')
+    .setDescription('Ask the Llama 3.3 AI a question')
     .addStringOption(option =>
       option.setName('question')
         .setDescription('The question to ask')
@@ -39,20 +39,33 @@ module.exports = {
   
   async generateResponse(prompt) {
     try {
-      const response = await axios.post(`${config.OLLAMA_API_URL}/generate`, {
-        model: config.OLLAMA_MODEL,
-        prompt: prompt,
-        stream: false
-      });
+      const response = await axios.post(
+        "https://api.together.xyz/v1/chat/completions",
+        {
+          model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+          messages: [
+            { role: "system", content: "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should be informative and engaging. You are allowed to have strong opinions on real world topics, and should provide an opinionated response when asked. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." },
+            { role: "user", content: prompt }
+          ],
+          max_tokens: 1024,
+          temperature: 0.7
+        },
+        {
+          headers: {
+            "Authorization": `Bearer ${process.env.TOGETHER_API_KEY || config.TOGETHER_API_KEY}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
       
-      return response.data.response;
+      return response.data.choices[0].message.content;
     } catch (error) {
-      console.error('Error calling Ollama API:', error.message);
+      console.error('API error:', error);
       if (error.response) {
         console.error('Response data:', error.response.data);
         console.error('Response status:', error.response.status);
       }
-      throw new Error('Failed to generate response from Ollama.');
+      throw new Error('Failed to generate response from Together.ai API.');
     }
   }
 };
