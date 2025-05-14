@@ -1,16 +1,21 @@
 {
-  "name": "discord-gpt-bot",
+  "name": "discord-ollama-bot",
   "version": "1.0.0",
-  "description": "Discord bot with GPT-3.5 integration - channel specific behavior",
+  "description": "Discord chatbot powered by Ollama",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "deploy": "node deploy-commands.js"
+    "dev": "nodemon index.js",
+    "deploy-commands": "node deploy-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
+    "axios": "^1.6.2",
+    "discord.js": "^14.13.0",
     "dotenv": "^16.3.1",
-    "openai": "^4.20.1"
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=16.9.0"
