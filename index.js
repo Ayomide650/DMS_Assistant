@@ -16,6 +16,13 @@ const client = new Client({
   ],
 });
 
+// Prevent multiple responses to the same message
+const processedMessages = new Set();
+// Clean up the Set every hour to prevent memory leaks
+setInterval(() => {
+  processedMessages.clear();
+}, 3600000); // Clear every hour
+
 // Command handling setup
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
@@ -57,24 +64,31 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// Message handling - WITHOUT "thinking" message
+// Message handling - Fixed to prevent duplicate responses
 client.on(Events.MessageCreate, async message => {
   // Ignore bot messages
   if (message.author.bot) return;
+  
+  // Check if message was already processed
+  if (processedMessages.has(message.id)) return;
   
   // Check if the bot is mentioned or if the message is in the active channel
   const botMentioned = message.mentions.users.has(client.user.id);
   const isActiveChannel = message.channelId === config.ACTIVE_CHANNEL_ID;
   
   // Only respond if the bot is mentioned or the message is in the active channel
-  if (isActiveChannel || botMentioned) {
+  if ((isActiveChannel || botMentioned) && message.content.trim() !== '') {
     try {
-      // Process the message
-      const messageContent = botMentioned 
-        ? message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim()
-        : message.content;
+      // Mark message as processed immediately
+      processedMessages.add(message.id);
       
-      // Set typing indicator to show the bot is working (optional)
+      // Process the message - remove any mention of the bot
+      const messageContent = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
+      
+      // Skip empty messages after removing mentions
+      if (messageContent === '') return;
+      
+      // Set typing indicator to show the bot is working
       message.channel.sendTyping().catch(e => console.error("Could not send typing indicator:", e));
       
       // Import the bot's response handling from commands/bot.js
