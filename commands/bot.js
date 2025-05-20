@@ -62,7 +62,7 @@ module.exports = {
       const messages = [
         { 
           role: "system", 
-          content: "You are a helpful, concise assistant. Keep responses SHORT and to the point - maximum 2-3 sentences. Be direct and don't over-explain. If asked about previous messages, refer to the conversation history provided."
+          content: "You are a direct, helpful assistant. Give short, factual answers. Do not be overly friendly or conversational. Just answer the question directly in 1-2 sentences maximum. Do not show your thinking process or use <think> tags."
         }
       ];
       
@@ -91,16 +91,30 @@ module.exports = {
       
       const responseText = response.data.choices[0].message.content;
       
+      // Remove any thinking tags that DeepSeek might include
+      let cleanResponse = responseText;
+      if (cleanResponse.includes('<think>')) {
+        cleanResponse = cleanResponse.replace(/<think>.*?<\/think>/gs, '').trim();
+      }
+      if (cleanResponse.includes('<thinking>')) {
+        cleanResponse = cleanResponse.replace(/<thinking>.*?<\/thinking>/gs, '').trim();
+      }
+      
+      // If response is empty after cleaning, provide a default
+      if (!cleanResponse || cleanResponse.length === 0) {
+        cleanResponse = "I understand.";
+      }
+      
       // Update conversation history
       userHistory.push({ role: "user", content: prompt });
-      userHistory.push({ role: "assistant", content: responseText });
+      userHistory.push({ role: "assistant", content: cleanResponse });
       
       // Keep only the last MAX_HISTORY messages (pairs of user/assistant)
       if (userHistory.length > this.MAX_HISTORY * 2) {
         userHistory.splice(0, userHistory.length - (this.MAX_HISTORY * 2));
       }
       
-      return responseText;
+      return cleanResponse;
     } catch (error) {
       console.error('API error:', error);
       if (error.response) {
@@ -131,5 +145,6 @@ module.exports = {
   }
 };
 
-// Initialize message count reset
+// Initialize message count reset and conversation memory cleanup
 module.exports.resetMessageCounts();
+module.exports.clearOldConversations();
