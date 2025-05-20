@@ -12,14 +12,6 @@ module.exports = {
         .setRequired(true)),
   
   async execute(interaction) {
-    // Check if the user is whitelisted
-    if (interaction.user.id !== config.WHITELISTED_USER_ID) {
-      return interaction.reply({ 
-        content: 'You are not authorized to use this command.', 
-        ephemeral: true 
-      });
-    }
-    
     await interaction.deferReply();
     
     const question = interaction.options.getString('question');
