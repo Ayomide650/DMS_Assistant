@@ -25,7 +25,6 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 // Bot configuration
 const config = {
   botEnabled: true,
-  // Load allowed channels from env first, then will be updated from database if available
   allowedChannels: process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [], 
   allowAll: false, // Whether bot responds to all users
   tokenLimit: 500, // Default token limit per user per day
@@ -69,22 +68,29 @@ async function withTypingIndicator(channel, callback) {
   }
 }
 
+// ==================== MODIFIED CHAT MEMORY FUNCTIONS ====================
+
 // Function to get chat memory for a user
 async function getChatMemory(userId) {
   try {
+    // Get the user's memory record
     const { data, error } = await supabase
       .from('chat_memory')
-      .select('*')
+      .select('memory')
       .eq('user_id', userId)
-      .order('timestamp', { ascending: false })
-      .limit(config.memoryLimit);
+      .single();
     
     if (error) {
+      // If no record exists yet, return empty array
+      if (error.code === 'PGRST116') {
+        return [];
+      }
       console.error('Error fetching chat memory:', error);
       return [];
     }
     
-    return data || [];
+    // Parse the JSONB memory field and return the array of conversations
+    return data?.memory || [];
   } catch (error) {
     console.error('Error getting chat memory:', error);
     return [];
@@ -94,55 +100,61 @@ async function getChatMemory(userId) {
 // Function to store a new conversation in chat memory
 async function storeChatMemory(userId, userMessage, botResponse) {
   try {
-    // Insert new memory
-    const { error } = await supabase
+    // Get current memory for this user
+    const { data, error } = await supabase
       .from('chat_memory')
-      .insert([{
-        user_id: userId,
-        user_message: userMessage,
-        bot_response: botResponse,
-        timestamp: new Date().toISOString()
-      }]);
+      .select('memory')
+      .eq('user_id', userId)
+      .single();
+      
+    // Create new memory entry
+    const newMemory = {
+      user_message: userMessage,
+      bot_response: botResponse,
+      timestamp: new Date().toISOString()
+    };
+    
+    let memories = [];
     
     if (error) {
-      console.error('Error storing chat memory:', error);
-    }
-    
-    // Get count of memories for this user
-    const { count, error: countError } = await supabase
-      .from('chat_memory')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
-    
-    if (countError) {
-      console.error('Error counting chat memories:', countError);
-      return;
-    }
-    
-    // If we have more than the limit, delete the oldest ones
-    if (count > config.memoryLimit) {
-      const { data: oldestMemories, error: oldestError } = await supabase
-        .from('chat_memory')
-        .select('id')
-        .eq('user_id', userId)
-        .order('timestamp', { ascending: true })
-        .limit(count - config.memoryLimit);
+      // If record doesn't exist, create new array with this memory
+      memories = [newMemory];
       
-      if (oldestError) {
-        console.error('Error fetching oldest memories:', oldestError);
-        return;
+      // Insert new record
+      const { error: insertError } = await supabase
+        .from('chat_memory')
+        .insert([{
+          user_id: userId,
+          last_message: userMessage,
+          memory: memories,
+          updated_at: new Date().toISOString()
+        }]);
+      
+      if (insertError) {
+        console.error('Error creating new chat memory record:', insertError);
+      }
+    } else {
+      // Get existing memories and add new one at the beginning
+      memories = data?.memory || [];
+      memories.unshift(newMemory);
+      
+      // Keep only up to memoryLimit memories
+      if (memories.length > config.memoryLimit) {
+        memories = memories.slice(0, config.memoryLimit);
       }
       
-      if (oldestMemories && oldestMemories.length > 0) {
-        const oldestIds = oldestMemories.map(memory => memory.id);
-        const { error: deleteError } = await supabase
-          .from('chat_memory')
-          .delete()
-          .in('id', oldestIds);
-        
-        if (deleteError) {
-          console.error('Error deleting old memories:', deleteError);
-        }
+      // Update existing record
+      const { error: updateError } = await supabase
+        .from('chat_memory')
+        .update({
+          last_message: userMessage,
+          memory: memories,
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId);
+      
+      if (updateError) {
+        console.error('Error updating chat memory:', updateError);
       }
     }
   } catch (error) {
@@ -156,7 +168,7 @@ function formatChatMemory(memories) {
     return '';
   }
   
-  // Format memories from newest to oldest (they come in that order from the database)
+  // Format memories - they should already be in newest-to-oldest order
   let memoryText = 'Previous conversations:\n';
   memories.forEach((memory, index) => {
     memoryText += `User: ${memory.user_message}\n`;
@@ -170,6 +182,28 @@ function formatChatMemory(memories) {
   
   return memoryText;
 }
+
+// Function to clear chat memory for a user
+async function clearChatMemory(userId) {
+  try {
+    const { error } = await supabase
+      .from('chat_memory')
+      .delete()
+      .eq('user_id', userId);
+    
+    if (error) {
+      console.error('Error clearing chat memory:', error);
+      throw error;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error clearing chat memory:', error);
+    throw error;
+  }
+}
+
+// ==================== END MODIFIED CHAT MEMORY FUNCTIONS ====================
 
 // Function to generate response from Together API
 async function generateResponse(prompt, userId) {
@@ -391,26 +425,6 @@ async function topupUserTokens(userId, amount) {
     return newUsage;
   } catch (error) {
     console.error('Error topping up tokens:', error);
-    throw error;
-  }
-}
-
-// Function to clear chat memory for a user
-async function clearChatMemory(userId) {
-  try {
-    const { error } = await supabase
-      .from('chat_memory')
-      .delete()
-      .eq('user_id', userId);
-    
-    if (error) {
-      console.error('Error clearing chat memory:', error);
-      throw error;
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Error clearing chat memory:', error);
     throw error;
   }
 }
