@@ -1,3 +1,5 @@
+// index.js - Updated to remove "thinking" message
+
 const { Client, Events, GatewayIntentBits, Collection } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -14,11 +16,17 @@ const client = new Client({
   ],
 });
 
+// Prevent multiple responses to the same message
+const processedMessages = new Set();
+// Clean up the Set every hour to prevent memory leaks
+setInterval(() => {
+  processedMessages.clear();
+}, 3600000); // Clear every hour
+
 // Command handling setup
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-
 for (const file of commandFiles) {
   const filePath = path.join(commandsPath, file);
   const command = require(filePath);
@@ -39,14 +47,11 @@ client.once(Events.ClientReady, c => {
 // Event handler for slash commands
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
-
   const command = interaction.client.commands.get(interaction.commandName);
-
   if (!command) {
     console.error(`No command matching ${interaction.commandName} was found.`);
     return;
   }
-
   try {
     await command.execute(interaction);
   } catch (error) {
@@ -59,32 +64,36 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// Message handling section in index.js
+// Message handling - Fixed to prevent duplicate responses
 client.on(Events.MessageCreate, async message => {
   // Ignore bot messages
   if (message.author.bot) return;
+  
+  // Check if message was already processed
+  if (processedMessages.has(message.id)) return;
   
   // Check if the bot is mentioned or if the message is in the active channel
   const botMentioned = message.mentions.users.has(client.user.id);
   const isActiveChannel = message.channelId === config.ACTIVE_CHANNEL_ID;
   
   // Only respond if the bot is mentioned or the message is in the active channel
-  if (isActiveChannel || botMentioned) {
+  if ((isActiveChannel || botMentioned) && message.content.trim() !== '') {
     try {
-      // Let the user know the bot is thinking
-      const thinkingMessage = await message.channel.send('Thinking...');
+      // Mark message as processed immediately
+      processedMessages.add(message.id);
       
-      // Process the message
-      const messageContent = botMentioned 
-        ? message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim()
-        : message.content;
+      // Process the message - remove any mention of the bot
+      const messageContent = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
+      
+      // Skip empty messages after removing mentions
+      if (messageContent === '') return;
+      
+      // Set typing indicator to show the bot is working
+      message.channel.sendTyping().catch(e => console.error("Could not send typing indicator:", e));
       
       // Import the bot's response handling from commands/bot.js
       const botCommand = require('./commands/bot');
       const response = await botCommand.generateResponse(messageContent);
-      
-      // Delete the thinking message and send the response
-      await thinkingMessage.delete();
       
       // Split long messages if needed (Discord has a 2000 character limit)
       if (response.length <= 2000) {
@@ -92,8 +101,15 @@ client.on(Events.MessageCreate, async message => {
       } else {
         // Split into chunks of 2000 characters
         const chunks = response.match(/.{1,2000}/g) || [];
+        let firstChunk = true;
+        
         for (const chunk of chunks) {
-          await message.channel.send(chunk);
+          if (firstChunk) {
+            await message.reply(chunk);
+            firstChunk = false;
+          } else {
+            await message.channel.send(chunk);
+          }
         }
       }
     } catch (error) {
@@ -102,3 +118,9 @@ client.on(Events.MessageCreate, async message => {
     }
   }
 });
+
+// Start the keep-alive server for hosting on Render
+keepAlive();
+
+// Log in to Discord with your client's token
+client.login(config.BOT_TOKEN);
