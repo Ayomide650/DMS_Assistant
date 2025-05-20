@@ -73,7 +73,21 @@ async function withTypingIndicator(channel, callback) {
 // Function to get chat memory for a user
 async function getChatMemory(userId) {
   try {
-    // Get the user's memory record
+    // First try using RPC function if available
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('get_chat_memory', {
+        p_user_id: userId
+      });
+      
+      if (!rpcError && rpcData) {
+        return rpcData.memory || [];
+      }
+    } catch (rpcFuncError) {
+      console.error('RPC get_chat_memory not available:', rpcFuncError);
+      // Continue to fallback
+    }
+    
+    // Fallback to direct query
     const { data, error } = await supabase
       .from('chat_memory')
       .select('memory')
@@ -115,23 +129,55 @@ async function storeChatMemory(userId, userMessage, botResponse) {
     };
     
     let memories = [];
+    const currentTime = new Date().toISOString();
     
     if (error) {
       // If record doesn't exist, create new array with this memory
       memories = [newMemory];
       
-      // Insert new record
-      const { error: insertError } = await supabase
-        .from('chat_memory')
-        .insert([{
-          user_id: userId,
-          last_message: userMessage,
-          memory: memories,
-          updated_at: new Date().toISOString()
-        }]);
-      
-      if (insertError) {
-        console.error('Error creating new chat memory record:', insertError);
+      try {
+        // Try to use RPC function if available (safer with RLS)
+        const { error: rpcError } = await supabase.rpc('create_chat_memory', {
+          p_user_id: userId,
+          p_last_message: userMessage,
+          p_memory: memories,
+          p_updated_at: currentTime
+        });
+        
+        if (rpcError) {
+          console.error('Error with RPC create_chat_memory:', rpcError);
+          
+          // Fallback to direct insert with RLS bypass option
+          console.log('Attempting direct insert...');
+          const { error: insertError } = await supabase
+            .from('chat_memory')
+            .insert([{
+              user_id: userId,
+              last_message: userMessage,
+              memory: memories,
+              updated_at: currentTime
+            }]);
+          
+          if (insertError) {
+            console.error('Error creating new chat memory record:', insertError);
+          }
+        }
+      } catch (funcError) {
+        console.error('RPC function error:', funcError);
+        
+        // Last resort - try direct insert
+        const { error: insertError } = await supabase
+          .from('chat_memory')
+          .insert([{
+            user_id: userId,
+            last_message: userMessage,
+            memory: memories,
+            updated_at: currentTime
+          }]);
+        
+        if (insertError) {
+          console.error('Error creating new chat memory record:', insertError);
+        }
       }
     } else {
       // Get existing memories and add new one at the beginning
@@ -143,18 +189,48 @@ async function storeChatMemory(userId, userMessage, botResponse) {
         memories = memories.slice(0, config.memoryLimit);
       }
       
-      // Update existing record
-      const { error: updateError } = await supabase
-        .from('chat_memory')
-        .update({
-          last_message: userMessage,
-          memory: memories,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
-      
-      if (updateError) {
-        console.error('Error updating chat memory:', updateError);
+      try {
+        // Try to use RPC function if available (safer with RLS)
+        const { error: rpcError } = await supabase.rpc('update_chat_memory', {
+          p_user_id: userId,
+          p_last_message: userMessage,
+          p_memory: memories,
+          p_updated_at: currentTime
+        });
+        
+        if (rpcError) {
+          console.error('Error with RPC update_chat_memory:', rpcError);
+          
+          // Fallback to direct update
+          const { error: updateError } = await supabase
+            .from('chat_memory')
+            .update({
+              last_message: userMessage,
+              memory: memories,
+              updated_at: currentTime
+            })
+            .eq('user_id', userId);
+          
+          if (updateError) {
+            console.error('Error updating chat memory:', updateError);
+          }
+        }
+      } catch (funcError) {
+        console.error('RPC function error:', funcError);
+        
+        // Last resort - try direct update
+        const { error: updateError } = await supabase
+          .from('chat_memory')
+          .update({
+            last_message: userMessage,
+            memory: memories,
+            updated_at: currentTime
+          })
+          .eq('user_id', userId);
+        
+        if (updateError) {
+          console.error('Error updating chat memory:', updateError);
+        }
       }
     }
   } catch (error) {
@@ -186,6 +262,23 @@ function formatChatMemory(memories) {
 // Function to clear chat memory for a user
 async function clearChatMemory(userId) {
   try {
+    // First try using RPC function if available
+    try {
+      const { error: rpcError } = await supabase.rpc('clear_chat_memory', {
+        p_user_id: userId
+      });
+      
+      if (!rpcError) {
+        return true;
+      } else {
+        console.error('Error with RPC clear_chat_memory:', rpcError);
+      }
+    } catch (rpcFuncError) {
+      console.error('RPC clear_chat_memory not available:', rpcFuncError);
+      // Continue to fallback
+    }
+    
+    // Fallback to direct delete
     const { error } = await supabase
       .from('chat_memory')
       .delete()
