@@ -28,13 +28,9 @@ const rest = new REST().setToken(config.BOT_TOKEN);
   try {
     console.log(`Started refreshing ${commands.length} application (/) commands.`);
 
-    // Get the client/application ID from the REST instance
-    const clientInfo = await rest.get(Routes.oauth2CurrentApplication());
-    const clientId = clientInfo.id;
-
-    // The put method is used to fully refresh all commands globally
+    // The put method is used to fully refresh all commands in the guild with the current set
     const data = await rest.put(
-      Routes.applicationCommands(clientId),
+      Routes.applicationCommands(config.CLIENT_ID),
       { body: commands },
     );
 
