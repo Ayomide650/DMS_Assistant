@@ -161,11 +161,6 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-// Initialize message count reset and conversation memory cleanup
-const botCommand = require('./commands/bot');
-botCommand.resetMessageCounts();
-botCommand.clearOldConversations();
-
 // Start the keep-alive server for hosting on Render
 keepAlive();
 
