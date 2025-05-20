@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { keepAlive } = require('./server');
+const botCommand = require('./commands/bot');
 
 // Create a new client instance
 const client = new Client({
@@ -96,7 +97,6 @@ client.on(Events.MessageCreate, async message => {
       if (messageContent === '') return;
       
       // Initialize bot command if not already done
-      const botCommand = require('./commands/bot');
       if (!botCommand.userConversations) {
         botCommand.userConversations = new Map();
       }
