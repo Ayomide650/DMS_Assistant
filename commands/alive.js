@@ -1,22 +1,20 @@
-// commands/alive.js - Whitelisted only command
 const { SlashCommandBuilder } = require('discord.js');
 const config = require('../config');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('alive')
-    .setDescription('Check if the bot is alive (Whitelisted users only)'),
+    .setDescription('Check if the bot is alive'),
   
   async execute(interaction) {
-    // Check if user is whitelisted
-    if (!config.WHITELISTED_USERS.includes(interaction.user.id)) {
-      await interaction.reply({ 
-        content: 'You do not have permission to use this command.', 
+    // Check if the user is whitelisted
+    if (interaction.user.id !== config.WHITELISTED_USER_ID) {
+      return interaction.reply({ 
+        content: 'You are not authorized to use this command.', 
         ephemeral: true 
       });
-      return;
     }
-
-    await interaction.reply('I\'m alive! Thanks for asking. 🤖');
-  },
+    
+    await interaction.reply('I\'m alive, thanks for asking!');
+  }
 };
