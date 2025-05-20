@@ -83,7 +83,7 @@ client.on(Events.MessageCreate, async message => {
   const botMentioned = message.mentions.users.has(client.user.id);
   const isActiveChannel = message.channelId === config.ACTIVE_CHANNEL_ID;
   
-  // Only respond if the bot is mentioned or the message is in the active channel
+  // Respond to all messages in active channel, or when mentioned in other channels
   if ((isActiveChannel || botMentioned) && message.content.trim() !== '') {
     try {
       // Mark message as processed immediately
@@ -95,7 +95,13 @@ client.on(Events.MessageCreate, async message => {
       // Skip empty messages after removing mentions
       if (messageContent === '') return;
       
-      // Anti-spam check
+      // Initialize bot command if not already done
+      const botCommand = require('./commands/bot');
+      if (!botCommand.userConversations) {
+        botCommand.userConversations = new Map();
+      }
+      
+      // Anti-spam check  
       const botCommand = require('./commands/bot');
       
       // Update user message count for anti-spam
