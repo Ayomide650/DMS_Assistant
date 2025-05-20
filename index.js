@@ -1,5 +1,4 @@
-// index.js - Updated to remove "thinking" message
-
+// index.js - Updated to handle dynamic commands and DM creation
 const { Client, Events, GatewayIntentBits, Collection } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +12,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
   ],
 });
 
@@ -64,13 +64,20 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-// Message handling - Fixed to prevent duplicate responses
+// Message handling - Updated to handle DM creation and anti-spam
 client.on(Events.MessageCreate, async message => {
   // Ignore bot messages
   if (message.author.bot) return;
   
   // Check if message was already processed
   if (processedMessages.has(message.id)) return;
+  
+  // Handle DM messages for command creation
+  if (!message.guild) {
+    const createCommand = require('./commands/create');
+    const handled = await createCommand.handleCreationMessage(message, client);
+    if (handled) return;
+  }
   
   // Check if the bot is mentioned or if the message is in the active channel
   const botMentioned = message.mentions.users.has(client.user.id);
@@ -88,12 +95,41 @@ client.on(Events.MessageCreate, async message => {
       // Skip empty messages after removing mentions
       if (messageContent === '') return;
       
+      // Anti-spam check
+      const botCommand = require('./commands/bot');
+      
+      // Update user message count for anti-spam
+      const userId = message.author.id;
+      const now = Date.now();
+      
+      if (!botCommand.userMessageCount.has(userId)) {
+        botCommand.userMessageCount.set(userId, { count: 1, lastMessage: now });
+      } else {
+        const userData = botCommand.userMessageCount.get(userId);
+        const timeDiff = now - userData.lastMessage;
+        
+        if (timeDiff < 5000) { // 5 seconds
+          userData.count++;
+        } else {
+          userData.count = 1;
+        }
+        userData.lastMessage = now;
+      }
+      
+      // Check if should ignore spam
+      if (botCommand.shouldIgnoreSpam && botCommand.shouldIgnoreSpam(message.channelId, userId)) {
+        console.log(`Ignoring spam from user ${userId} in channel ${message.channelId}`);
+        return;
+      }
+      
       // Set typing indicator to show the bot is working
       message.channel.sendTyping().catch(e => console.error("Could not send typing indicator:", e));
       
-      // Import the bot's response handling from commands/bot.js
-      const botCommand = require('./commands/bot');
-      const response = await botCommand.generateResponse(messageContent);
+      // Generate response with user ID for conversation memory
+      const response = await botCommand.generateResponse(messageContent, true, message.channelId, message.author.id);
+      
+      // If anti-spam returned null, don't respond
+      if (response === null) return;
       
       // Split long messages if needed (Discord has a 2000 character limit)
       if (response.length <= 2000) {
@@ -118,6 +154,11 @@ client.on(Events.MessageCreate, async message => {
     }
   }
 });
+
+// Initialize message count reset and conversation memory cleanup
+const botCommand = require('./commands/bot');
+botCommand.resetMessageCounts();
+botCommand.clearOldConversations();
 
 // Start the keep-alive server for hosting on Render
 keepAlive();
