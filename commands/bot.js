@@ -1,4 +1,4 @@
-// commands/bot.js - Updated for DeepSeek and improved functionality
+// commands/bot.js - Updated for DeepSeek with conversation memory
 const { SlashCommandBuilder } = require('discord.js');
 const axios = require('axios');
 const config = require('../config');
@@ -18,7 +18,7 @@ module.exports = {
     const question = interaction.options.getString('question');
     
     try {
-      const response = await this.generateResponse(question);
+      const response = await this.generateResponse(question, false, null, interaction.user.id);
       
       // Split long messages if needed (Discord has a 2000 character limit)
       if (response.length <= 2000) {
@@ -38,26 +38,48 @@ module.exports = {
     }
   },
   
-  async generateResponse(prompt, isAntiSpamCheck = false, channelId = null) {
+  // Store conversation history for each user
+  userConversations: new Map(),
+  
+  // Maximum messages to keep in memory per user (last 10 messages)
+  MAX_HISTORY: 10,
+  
+  async generateResponse(prompt, isAntiSpamCheck = false, channelId = null, userId = null) {
     try {
       // Check if this is an anti-spam scenario
-      if (isAntiSpamCheck && this.shouldIgnoreSpam && this.shouldIgnoreSpam(channelId)) {
+      if (isAntiSpamCheck && this.shouldIgnoreSpam && this.shouldIgnoreSpam(channelId, userId)) {
         return null; // Don't respond to spam
       }
+
+      // Get or create conversation history for this user
+      if (!this.userConversations.has(userId)) {
+        this.userConversations.set(userId, []);
+      }
+      
+      const userHistory = this.userConversations.get(userId);
+      
+      // Build messages array starting with system prompt
+      const messages = [
+        { 
+          role: "system", 
+          content: "You are a helpful, concise assistant. Keep responses SHORT and to the point - maximum 2-3 sentences. Be direct and don't over-explain. If asked about previous messages, refer to the conversation history provided."
+        }
+      ];
+      
+      // Add conversation history (recent messages)
+      messages.push(...userHistory);
+      
+      // Add current user message
+      messages.push({ role: "user", content: prompt });
 
       const response = await axios.post(
         "https://api.together.xyz/v1/chat/completions",
         {
           model: "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-          messages: [
-            { 
-              role: "system", 
-              content: "You are a professional, concise assistant. Provide brief, clear answers focusing on key information. Avoid unnecessary details and lengthy explanations. Keep responses under 4 sentences when possible. Be direct, accurate, and efficient in your communication. Maintain a professional tone at all times."
-            },
-            { role: "user", content: prompt }
-          ],
-          max_tokens: 400,
-          temperature: 0.5
+          messages: messages,
+          max_tokens: 200, // Reduced further for shorter responses
+          temperature: 0.3, // Lower temperature for more focused responses
+          top_p: 0.8
         },
         {
           headers: {
@@ -67,7 +89,18 @@ module.exports = {
         }
       );
       
-      return response.data.choices[0].message.content;
+      const responseText = response.data.choices[0].message.content;
+      
+      // Update conversation history
+      userHistory.push({ role: "user", content: prompt });
+      userHistory.push({ role: "assistant", content: responseText });
+      
+      // Keep only the last MAX_HISTORY messages (pairs of user/assistant)
+      if (userHistory.length > this.MAX_HISTORY * 2) {
+        userHistory.splice(0, userHistory.length - (this.MAX_HISTORY * 2));
+      }
+      
+      return responseText;
     } catch (error) {
       console.error('API error:', error);
       if (error.response) {
@@ -87,6 +120,14 @@ module.exports = {
     setInterval(() => {
       this.userMessageCount.clear();
     }, 60000);
+  },
+  
+  // Clear old conversations every hour to prevent memory leaks
+  clearOldConversations() {
+    setInterval(() => {
+      console.log(`Clearing conversation memory for ${this.userConversations.size} users`);
+      this.userConversations.clear();
+    }, 3600000); // Clear every hour
   }
 };
 
