@@ -1,5 +1,4 @@
-// commands/bot.js - Updated for shorter, more professional responses
-
+// commands/bot.js - Updated for DeepSeek and improved functionality
 const { SlashCommandBuilder } = require('discord.js');
 const axios = require('axios');
 const config = require('../config');
@@ -7,7 +6,7 @@ const config = require('../config');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('ask')
-    .setDescription('Ask the Llama 3.3 AI a question')
+    .setDescription('Ask the DeepSeek AI a question')
     .addStringOption(option =>
       option.setName('question')
         .setDescription('The question to ask')
@@ -39,12 +38,17 @@ module.exports = {
     }
   },
   
-  async generateResponse(prompt) {
+  async generateResponse(prompt, isAntiSpamCheck = false, channelId = null) {
     try {
+      // Check if this is an anti-spam scenario
+      if (isAntiSpamCheck && this.shouldIgnoreSpam && this.shouldIgnoreSpam(channelId)) {
+        return null; // Don't respond to spam
+      }
+
       const response = await axios.post(
         "https://api.together.xyz/v1/chat/completions",
         {
-          model: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+          model: "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
           messages: [
             { 
               role: "system", 
@@ -52,8 +56,8 @@ module.exports = {
             },
             { role: "user", content: prompt }
           ],
-          max_tokens: 400, // Reduced from 1024 to encourage shorter responses
-          temperature: 0.5 // Reduced from 0.7 for more focused, consistent responses
+          max_tokens: 400,
+          temperature: 0.5
         },
         {
           headers: {
@@ -70,7 +74,21 @@ module.exports = {
         console.error('Response data:', error.response.data);
         console.error('Response status:', error.response.status);
       }
-      throw new Error('Failed to generate response from Together.ai API.');
+      throw new Error('Failed to generate response from DeepSeek API.');
     }
+  },
+
+  // Anti-spam functionality
+  userMessageCount: new Map(),
+  shouldIgnoreSpam: null, // Will be set by dynamic commands
+  
+  // Reset message counts every minute
+  resetMessageCounts() {
+    setInterval(() => {
+      this.userMessageCount.clear();
+    }, 60000);
   }
 };
+
+// Initialize message count reset
+module.exports.resetMessageCounts();
