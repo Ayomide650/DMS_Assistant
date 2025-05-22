@@ -882,7 +882,7 @@ async function processCommand(message) {
     await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
     
     const commandsMsg = `**🤖 Available Admin Commands:**
-    **DM Commands (Admin Only):**
+  **DM Commands (Admin Only):**
 - \`${config.commandPrefix}characterset [amount]\` - Set character limit (10-500)
 - \`${config.commandPrefix}limitset [amount]\` - Set daily token limit (100-2000)
 
@@ -1156,9 +1156,8 @@ client.on('messageCreate', async (message) => {
   // Check if message should trigger bot response
   const shouldRespond = (
     isDM || // Always respond in DMs
-    isInDedicatedChannel || // Respond in dedicated channels
-    config.allowAll || // Respond to all if enabled
-    isWhitelisted(userId) // Respond to whitelisted users
+    (isInDedicatedChannel && (config.allowAll || isWhitelisted(userId))) || // Respond in dedicated channels only if allowed
+    (!isDM && !isInDedicatedChannel && isWhitelisted(userId) && config.allowAll) // Respond to whitelisted users outside dedicated channels only if allowAll is enabled
   );
   
   if (!shouldRespond) return;
@@ -1168,8 +1167,8 @@ client.on('messageCreate', async (message) => {
                       message.content.toLowerCase().includes('dms') ||
                       message.content.toLowerCase().includes('bot');
   
-  // Only respond if bot is mentioned (unless in DMs or dedicated channels)
-  if (!isDM && !isInDedicatedChannel && !botMentioned) return;
+  // Only respond if in DMs, dedicated channels, or if bot is mentioned and user is allowed
+  if (!isDM && !isInDedicatedChannel) return;
   
   // Check token limit (skip for whitelisted users)
   if (!isWhitelisted(userId)) {
