@@ -223,6 +223,13 @@ Uptime: ${uptime}`;
       await message.reply('Usage: /whois [user_id]');
     }
   }
+  else {
+    // Any other command reactivates the bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+  }
 };
 
 // XP Rank thresholds
