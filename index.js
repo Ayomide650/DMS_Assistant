@@ -28,10 +28,9 @@ const config = {
   allowedChannels: process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [], 
   allowAll: false, // Whether bot responds to all users
   tokenLimit: 500, // Default token limit per user per day
-  memoryEnabled: true, // Enable chat memory
-  memoryLimit: 5, // Number of past conversations to remember per user
   xpEnabled: false, // XP system disabled by default
   botSilenced: false, // Bot silence mode
+  startTime: Date.now(), // Bot start time for uptime calculation
 };
 
 // XP Configuration
@@ -49,7 +48,180 @@ const BOT_INFO = {
   creator: {
     name: "DMS.EXE",
     handle: "@its.justdms",
-    description: "I serve DMS, a content creator known for gaming videos."
+    description: "I serve DMS, a content creator known for gaming videos, especially Free Fire content."
+  else if (content.startsWith('/topup')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 3) {
+      const targetId = args[1];
+      const amount = parseInt(args[2]);
+      
+      if (!isNaN(amount) && amount > 0) {
+        const newUsage = await topupUserTokens(targetId, amount);
+        await message.reply(`Topped up ${amount} tokens for user <@${targetId}>. They now have used ${newUsage} tokens today.`);
+      } else {
+        await message.reply('Invalid amount. Please provide a positive number.');
+      }
+    } else {
+      await message.reply('Usage: /topup {user_id} [amount]');
+    }
+  }
+  else if (content.startsWith('/limit')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 3 && args[1] === 'set') {
+      const limit = parseInt(args[2]);
+      
+      if (!isNaN(limit) && limit > 0) {
+        config.tokenLimit = limit;
+        await supabase
+          .from('config')
+          .update({ value: limit })
+          .eq('key', 'token_limit');
+        
+        await message.reply(`Token limit updated to ${limit} per user per day.`);
+      } else {
+        await message.reply('Invalid limit. Please provide a positive number.');
+      }
+    } else {
+      await message.reply('Usage: /limit set [new amount]');
+    }
+  }
+  else if (content.startsWith('/balance')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('*');
+    
+    if (error) {
+      await message.reply('Error fetching user balances.');
+      return;
+    }
+    
+    let response = '**User Token Usage Today:**\n';
+    for (const user of users) {
+      response += `<@${user.id}>: ${user.tokens_used_today}/${config.tokenLimit} tokens\n`;
+    }
+    
+    await message.reply(response);
+  }
+  else if (content.startsWith('/status')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const mode = config.allowAll ? 'All users' : 'Admin-only';
+    const xpStatus = config.xpEnabled ? '✅ Enabled' : '❌ Disabled';
+    const silenceStatus = config.botSilenced ? '✅ On' : '❌ Off';
+    const channelCount = config.allowedChannels.length;
+    const uptime = getUptime();
+    
+    const statusMsg = `**Bot Status:**
+Mode: ${mode}
+XP: ${xpStatus}
+Silenced: ${silenceStatus}
+Channels: ${channelCount} added
+Uptime: ${uptime}`;
+    
+    await message.reply(statusMsg);
+  }
+  else if (content.startsWith('/stats')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const stats = await getXPStats();
+    if (!stats) {
+      await message.reply('Error fetching XP statistics.');
+      return;
+    }
+    
+    const xpStatus = config.xpEnabled ? '✅ Active' : '❌ Inactive';
+    const topUserText = stats.topUser ? `@${stats.topUser.username} (${stats.topUser.xp} XP)` : 'None';
+    
+    const statsMsg = `📊 **XP System Metrics:**
+• Users tracked: ${stats.totalUsers}
+• XP system: ${xpStatus}
+• Messages logged (24h): ${stats.recentMessages}
+• Top XP user: ${topUserText}`;
+    
+    await message.reply(statsMsg);
+  }
+  else if (content.startsWith('/purge')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 2) {
+      const targetId = args[1];
+      
+      try {
+        await purgeUserXP(targetId);
+        await message.reply(`🗑️ XP data for user ${targetId} has been deleted.`);
+      } catch (error) {
+        await message.reply('Error deleting user XP data.');
+      }
+    } else {
+      await message.reply('Usage: /purge [user_id]');
+    }
+  }
+  else if (content.startsWith('/whois')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 2) {
+      const targetId = args[1];
+      
+      try {
+        const { data: user, error } = await supabase
+          .from('user_xp')
+          .select('*')
+          .eq('user_id', targetId)
+          .single();
+        
+        if (error || !user) {
+          await message.reply('User not found in XP system.');
+          return;
+        }
+        
+        const userInfo = `**User:** <@${targetId}>
+**Level:** ${user.level}
+**XP:** ${user.xp}
+**Rank:** ${user.rank}`;
+        
+        await message.reply(userInfo);
+      } catch (error) {
+        await message.reply('Error fetching user information.');
+      }
+    } else {
+      await message.reply('Usage: /whois [user_id]');
+    }
   }
 };
 
@@ -228,364 +400,7 @@ async function getLeaderboard(limit = 10) {
   }
 }
 
-// ==================== CHAT MEMORY FUNCTIONS ====================
-
-// Function to get chat memory for a user
-async function getChatMemory(userId) {
-  try {
-    // First try using RPC function if available
-    try {
-      const { data: rpcData, error: rpcError } = await supabase.rpc('get_chat_memory', {
-        p_user_id: userId
-      });
-      
-      if (!rpcError && rpcData) {
-        return rpcData.memory || [];
-      }
-    } catch (rpcFuncError) {
-      console.error('RPC get_chat_memory not available:', rpcFuncError);
-      // Continue to fallback
-    }
-    
-    // Fallback to direct query
-    const { data, error } = await supabase
-      .from('chat_memory')
-      .select('memory')
-      .eq('user_id', userId)
-      .single();
-    
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return [];
-      }
-      console.error('Error fetching chat memory:', error);
-      return [];
-    }
-    
-    return data?.memory || [];
-  } catch (error) {
-    console.error('Error getting chat memory:', error);
-    return [];
-  }
-}
-
-// Function to store a new conversation in chat memory
-async function storeChatMemory(userId, userMessage, botResponse) {
-  try {
-    const { data, error } = await supabase
-      .from('chat_memory')
-      .select('memory')
-      .eq('user_id', userId)
-      .single();
-      
-    const newMemory = {
-      user_message: userMessage,
-      bot_response: botResponse,
-      timestamp: new Date().toISOString()
-    };
-    
-    let memories = [];
-    const currentTime = new Date().toISOString();
-    
-    if (error) {
-      memories = [newMemory];
-      
-      try {
-        const { error: rpcError } = await supabase.rpc('create_chat_memory', {
-          p_user_id: userId,
-          p_last_message: userMessage,
-          p_memory: memories,
-          p_updated_at: currentTime
-        });
-        
-        if (rpcError) {
-          console.error('Error with RPC create_chat_memory:', rpcError);
-          
-          const { error: insertError } = await supabase
-            .from('chat_memory')
-            .insert([{
-              user_id: userId,
-              last_message: userMessage,
-              memory: memories,
-              updated_at: currentTime
-            }]);
-          
-          if (insertError) {
-            console.error('Error creating new chat memory record:', insertError);
-          }
-        }
-      } catch (funcError) {
-        console.error('RPC function error:', funcError);
-        
-        const { error: insertError } = await supabase
-          .from('chat_memory')
-          .insert([{
-            user_id: userId,
-            last_message: userMessage,
-            memory: memories,
-            updated_at: currentTime
-          }]);
-        
-        if (insertError) {
-          console.error('Error creating new chat memory record:', insertError);
-        }
-      }
-    } else {
-      memories = data?.memory || [];
-      memories.unshift(newMemory);
-      
-      if (memories.length > config.memoryLimit) {
-        memories = memories.slice(0, config.memoryLimit);
-      }
-      
-      try {
-        const { error: rpcError } = await supabase.rpc('update_chat_memory', {
-          p_user_id: userId,
-          p_last_message: userMessage,
-          p_memory: memories,
-          p_updated_at: currentTime
-        });
-        
-        if (rpcError) {
-          console.error('Error with RPC update_chat_memory:', rpcError);
-          
-          const { error: updateError } = await supabase
-            .from('chat_memory')
-            .update({
-              last_message: userMessage,
-              memory: memories,
-              updated_at: currentTime
-            })
-            .eq('user_id', userId);
-          
-          if (updateError) {
-            console.error('Error updating chat memory:', updateError);
-          }
-        }
-      } catch (funcError) {
-        console.error('RPC function error:', funcError);
-        
-        const { error: updateError } = await supabase
-          .from('chat_memory')
-          .update({
-            last_message: userMessage,
-            memory: memories,
-            updated_at: currentTime
-          })
-          .eq('user_id', userId);
-        
-        if (updateError) {
-          console.error('Error updating chat memory:', updateError);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Error storing chat memory:', error);
-  }
-}
-
-// Function to format chat memory for the API prompt
-function formatChatMemory(memories) {
-  if (!memories || memories.length === 0) {
-    return '';
-  }
-  
-  let memoryText = 'Previous conversations:\n';
-  memories.forEach((memory, index) => {
-    memoryText += `User: ${memory.user_message}\n`;
-    memoryText += `Assistant: ${memory.bot_response}\n`;
-    
-    if (index < memories.length - 1) {
-      memoryText += '\n';
-    }
-  });
-  
-  return memoryText;
-}
-
-// Function to clear chat memory for a user
-async function clearChatMemory(userId) {
-  try {
-    try {
-      const { error: rpcError } = await supabase.rpc('clear_chat_memory', {
-        p_user_id: userId
-      });
-      
-      if (!rpcError) {
-        return true;
-      } else {
-        console.error('Error with RPC clear_chat_memory:', rpcError);
-      }
-    } catch (rpcFuncError) {
-      console.error('RPC clear_chat_memory not available:', rpcFuncError);
-    }
-    
-    const { error } = await supabase
-      .from('chat_memory')
-      .delete()
-      .eq('user_id', userId);
-    
-    if (error) {
-      console.error('Error clearing chat memory:', error);
-      throw error;
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Error clearing chat memory:', error);
-    throw error;
-  }
-}
-
-// ==================== AI RESPONSE GENERATION ====================
-
-// Function to generate response from Together API
-async function generateResponse(prompt, userId) {
-  try {
-    let chatMemory = '';
-    if (config.memoryEnabled) {
-      const memories = await getChatMemory(userId);
-      chatMemory = formatChatMemory(memories);
-    }
-    
-    const apiPrompt = `You are a helpful assistant serving DMS (${BOT_INFO.creator.handle}).
-${BOT_INFO.creator.description}
-Be helpful and concise.
-
-If someone asks about sensitivity or sensitivity settings, direct them to send their device name to #test channel.
-
-${chatMemory ? chatMemory + '\n' : ''}
-User: ${prompt}
-Assistant:`;
-
-    const response = await axios.post(
-      'https://api.together.xyz/v1/completions',
-      {
-        model: 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
-        prompt: apiPrompt,
-        max_tokens: 500,
-        temperature: 0.7,
-        top_p: 0.9,
-        frequency_penalty: 0,
-        presence_penalty: 0,
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.TOGETHER_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    const tokensUsed = response.data.usage.total_tokens;
-    
-    if (!isWhitelisted(userId)) {
-      await updateTokenUsage(userId, tokensUsed);
-    }
-    
-    const responseText = response.data.choices[0].text.trim();
-    
-    if (config.memoryEnabled) {
-      await storeChatMemory(userId, prompt, responseText);
-    }
-    
-    return {
-      text: responseText,
-      tokensUsed
-    };
-  } catch (error) {
-    console.error('Error generating response:', error);
-    throw error;
-  }
-}
-
 // ==================== TOKEN USAGE FUNCTIONS ====================
-
-// Load config from database
-async function loadConfig() {
-  try {
-    const { data: tokenLimit, error: tokenLimitError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'token_limit')
-      .single();
-    
-    if (!tokenLimitError && tokenLimit) {
-      config.tokenLimit = tokenLimit.value;
-    }
-    
-    const { data: allowedChannels, error: channelsError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'allowed_channels')
-      .single();
-    
-    if (!channelsError && allowedChannels) {
-      const envChannels = process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [];
-      
-      if (Array.isArray(allowedChannels.value)) {
-        const channelSet = new Set([...envChannels, ...allowedChannels.value]);
-        config.allowedChannels = [...channelSet];
-      }
-    }
-    
-    const { data: allowAll, error: allowAllError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'allow_all')
-      .single();
-    
-    if (!allowAllError && allowAll) {
-      config.allowAll = allowAll.value;
-    }
-    
-    const { data: memoryEnabled, error: memoryEnabledError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'memory_enabled')
-      .single();
-    
-    if (!memoryEnabledError && memoryEnabled !== null) {
-      config.memoryEnabled = memoryEnabled.value;
-    }
-    
-    const { data: memoryLimit, error: memoryLimitError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'memory_limit')
-      .single();
-    
-    if (!memoryLimitError && memoryLimit !== null) {
-      config.memoryLimit = memoryLimit.value;
-    }
-    
-    // Load XP system status
-    const { data: xpEnabled, error: xpEnabledError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'xp_enabled')
-      .single();
-    
-    if (!xpEnabledError && xpEnabled !== null) {
-      config.xpEnabled = xpEnabled.value;
-    }
-    
-    // Load bot silence status
-    const { data: botSilenced, error: botSilencedError } = await supabase
-      .from('config')
-      .select('value')
-      .eq('key', 'bot_silenced')
-      .single();
-    
-    if (!botSilencedError && botSilenced !== null) {
-      config.botSilenced = botSilenced.value;
-    }
-    
-    console.log('Config loaded from database:', config);
-  } catch (error) {
-    console.error('Error loading config:', error);
-  }
-}
 
 // Function to check and update token usage
 async function checkTokenUsage(userId) {
@@ -667,6 +482,225 @@ async function topupUserTokens(userId, amount) {
   } catch (error) {
     console.error('Error topping up tokens:', error);
     throw error;
+  }
+}
+
+// Function to get uptime
+function getUptime() {
+  const uptimeMs = Date.now() - config.startTime;
+  const hours = Math.floor(uptimeMs / (1000 * 60 * 60));
+  const minutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+  return `${hours}h ${minutes}m`;
+}
+
+// Function to get XP system stats
+async function getXPStats() {
+  try {
+    const { data: users, error } = await supabase
+      .from('user_xp')
+      .select('*');
+    
+    if (error) {
+      console.error('Error fetching XP stats:', error);
+      return null;
+    }
+    
+    const totalUsers = users?.length || 0;
+    const topUser = users?.sort((a, b) => b.xp - a.xp)[0];
+    
+    // Get today's messages (approximate based on recent activity)
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    const recentUsers = users?.filter(user => 
+      parseInt(user.last_message_time) > oneDayAgo
+    ) || [];
+    
+    return {
+      totalUsers,
+      topUser,
+      recentMessages: recentUsers.length * 5 // Approximate
+    };
+  } catch (error) {
+    console.error('Error getting XP stats:', error);
+    return null;
+  }
+}
+
+// Function to delete user XP data
+async function purgeUserXP(userId) {
+  try {
+    const { error } = await supabase
+      .from('user_xp')
+      .delete()
+      .eq('user_id', userId);
+    
+    if (error) {
+      console.error('Error purging user XP:', error);
+      throw error;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error purging user XP:', error);
+    throw error;
+  }
+}
+
+// Function to check if message is asking about sensitivity
+function isSensitivityQuestion(message) {
+  const sensitivityKeywords = [
+    'sensitivity', 'sens', 'dpi', 'aim', 'mouse settings', 
+    'aim settings', 'config', 'setup', 'mouse config'
+  ];
+  
+  const lowerMessage = message.toLowerCase();
+  return sensitivityKeywords.some(keyword => lowerMessage.includes(keyword));
+}
+
+// Function to truncate response to 90 character limit
+function truncateResponse(text, maxLength = 90) {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  
+  // Find the last complete word within the limit
+  const truncated = text.substring(0, maxLength - 3); // Leave space for "..."
+  const lastSpace = truncated.lastIndexOf(' ');
+  
+  if (lastSpace > maxLength * 0.5) {
+    return truncated.substring(0, lastSpace) + '...';
+  }
+  
+  // If no good word break, just truncate
+  return truncated + '...';
+}
+
+// Function to generate response from Together API
+async function generateResponse(prompt, userId) {
+  try {
+    // Check if it's a sensitivity question
+    if (isSensitivityQuestion(prompt)) {
+      return {
+        text: "If you need sensitivity settings, please send your device name to #test channel and wait for assistance! 🎮",
+        tokensUsed: 0
+      };
+    }
+    
+    const apiPrompt = `You are a helpful AI assistant serving DMS (${BOT_INFO.creator.handle}).
+${BOT_INFO.creator.description}
+
+You have comprehensive knowledge about current events, world news, science, technology, history, culture, entertainment, sports, and all general topics. Be helpful, friendly, and conversational. Keep responses very short and concise (under 90 characters).
+
+Current date: ${new Date().toLocaleDateString()}
+
+User: ${prompt}
+Assistant:`;
+
+    const response = await axios.post(
+      'https://api.together.xyz/v1/completions',
+      {
+        model: 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
+        prompt: apiPrompt,
+        max_tokens: 50, // Reduced for shorter responses
+        temperature: 0.7,
+        top_p: 0.9,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TOGETHER_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const tokensUsed = response.data.usage.total_tokens;
+    
+    if (!isWhitelisted(userId)) {
+      await updateTokenUsage(userId, tokensUsed);
+    }
+    const responseText = response.data.choices[0].text.trim();
+    
+    // Truncate response to fit Discord's limit
+    const truncatedResponse = truncateResponse(responseText);
+    
+    return {
+      text: truncatedResponse,
+      tokensUsed
+    };
+  } catch (error) {
+    console.error('Error generating response:', error);
+    throw error;
+  }
+}
+
+// ==================== AI RESPONSE GENERATION ====================
+
+// ==================== CONFIG FUNCTIONS ====================
+
+// Load config from database
+async function loadConfig() {
+  try {
+    const { data: tokenLimit, error: tokenLimitError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'token_limit')
+      .single();
+    
+    if (!tokenLimitError && tokenLimit) {
+      config.tokenLimit = tokenLimit.value;
+    }
+    
+    const { data: allowedChannels, error: channelsError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'allowed_channels')
+      .single();
+    
+    if (!channelsError && allowedChannels) {
+      const envChannels = process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [];
+      
+      if (Array.isArray(allowedChannels.value)) {
+        const channelSet = new Set([...envChannels, ...allowedChannels.value]);
+        config.allowedChannels = [...channelSet];
+      }
+    }
+    
+    const { data: allowAll, error: allowAllError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'allow_all')
+      .single();
+    
+    if (!allowAllError && allowAll) {
+      config.allowAll = allowAll.value;
+    }
+    
+    // Load XP system status
+    const { data: xpEnabled, error: xpEnabledError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'xp_enabled')
+      .single();
+    
+    if (!xpEnabledError && xpEnabled !== null) {
+      config.xpEnabled = xpEnabled.value;
+    }
+    
+    // Load bot silence status
+    const { data: botSilenced, error: botSilencedError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'bot_silenced')
+      .single();
+    
+    if (!botSilencedError && botSilenced !== null) {
+      config.botSilenced = botSilenced.value;
+    }
+    
+    console.log('Config loaded from database:', config);
+  } catch (error) {
+    console.error('Error loading config:', error);
   }
 }
 
@@ -808,143 +842,6 @@ async function processCommand(message) {
       await message.reply('Usage: /channel add|remove|list [channel_id]');
     }
   }
-  else if (content.startsWith('/topup')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 3) {
-      const targetId = args[1];
-      const amount = parseInt(args[2]);
-      
-      if (!isNaN(amount) && amount > 0) {
-        const newUsage = await topupUserTokens(targetId, amount);
-        await message.reply(`Topped up ${amount} tokens for user <@${targetId}>. They now have used ${newUsage} tokens today.`);
-      } else {
-        await message.reply('Invalid amount. Please provide a positive number.');
-      }
-    } else {
-      await message.reply('Usage: /topup {user_id} [amount]');
-    }
-  }
-  else if (content.startsWith('/limit')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 3 && args[1] === 'set') {
-      const limit = parseInt(args[2]);
-      
-      if (!isNaN(limit) && limit > 0) {
-        config.tokenLimit = limit;
-        await supabase
-          .from('config')
-          .update({ value: limit })
-          .eq('key', 'token_limit');
-        
-        await message.reply(`Token limit updated to ${limit} per user per day.`);
-      } else {
-        await message.reply('Invalid limit. Please provide a positive number.');
-      }
-    } else {
-      await message.reply('Usage: /limit set [new amount]');
-    }
-  }
-  else if (content.startsWith('/balance')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('*');
-    
-    if (error) {
-      await message.reply('Error fetching user balances.');
-      return;
-    }
-    
-    let response = '**User Token Usage Today:**\n';
-    for (const user of users) {
-      response += `<@${user.id}>: ${user.tokens_used_today}/${config.tokenLimit} tokens\n`;
-    }
-    
-    await message.reply(response);
-  }
-  else if (content.startsWith('/memory')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    
-    if (args.length >= 2) {
-      const action = args[1];
-      
-      if (action === 'enable') {
-        config.memoryEnabled = true;
-        await supabase
-          .from('config')
-          .upsert({ key: 'memory_enabled', value: true });
-        
-        await message.reply('Chat memory enabled.');
-      } 
-      else if (action === 'disable') {
-        config.memoryEnabled = false;
-        await supabase
-          .from('config')
-          .upsert({ key: 'memory_enabled', value: false });
-        
-        await message.reply('Chat memory disabled.');
-      }
-      else if (action === 'clear') {
-        if (args.length === 3) {
-          const targetId = args[2];
-          await clearChatMemory(targetId);
-          await message.reply(`Chat memory cleared for user <@${targetId}>.`);
-        } else {
-          await message.reply('Usage: /memory clear [user_id]');
-        }
-      }
-      else if (action === 'limit') {
-        if (args.length === 3) {
-          const limit = parseInt(args[2]);
-          
-          if (!isNaN(limit) && limit > 0) {
-            config.memoryLimit = limit;
-            await supabase
-              .from('config')
-              .upsert({ key: 'memory_limit', value: limit });
-            
-            await message.reply(`Memory limit updated to ${limit} conversations per user.`);
-          } else {
-            await message.reply('Invalid limit. Please provide a positive number.');
-          }
-        } else {
-          await message.reply('Usage: /memory limit [number]');
-        }
-      }
-      else if (action === 'status') {
-        const status = config.memoryEnabled ? 'enabled' : 'disabled';
-        await message.reply(`Chat memory is currently ${status} with a limit of ${config.memoryLimit} conversations per user.`);
-      }
-      else {
-        await message.reply('Usage: /memory enable|disable|clear|limit|status [options]');
-      }
-    } else {
-      await message.reply('Usage: /memory enable|disable|clear|limit|status [options]');
-    }
-  }
   else {
     // Any other command reactivates the bot if silenced
     config.botSilenced = false;
@@ -1016,7 +913,7 @@ client.on('messageCreate', async (message) => {
   if (!config.allowAll && !isUserAdmin && !isDM) {
     return; // Only respond to admins when not in all mode
   }
-  
+
   // Check token usage for regular users
   if (!isUserWhitelisted) {
     const tokensUsed = await checkTokenUsage(userId);
