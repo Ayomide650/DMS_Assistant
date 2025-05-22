@@ -49,116 +49,6 @@ const BOT_INFO = {
     name: "DMS.EXE",
     handle: "@its.justdms",
     description: "I serve DMS, a content creator known for gaming videos, especially Free Fire content."
-
-  else if (content.startsWith('/status')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const mode = config.allowAll ? 'All users' : 'Admin-only';
-    const xpStatus = config.xpEnabled ? '✅ Enabled' : '❌ Disabled';
-    const silenceStatus = config.botSilenced ? '✅ On' : '❌ Off';
-    const channelCount = config.allowedChannels.length;
-    const uptime = getUptime();
-    
-    const statusMsg = `**Bot Status:**
-Mode: ${mode}
-XP: ${xpStatus}
-Silenced: ${silenceStatus}
-Channels: ${channelCount} added
-Uptime: ${uptime}`;
-    
-    await message.reply(statusMsg);
-  }
-  else if (content.startsWith('/stats')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const stats = await getXPStats();
-    if (!stats) {
-      await message.reply('Error fetching XP statistics.');
-      return;
-    }
-    
-    const xpStatus = config.xpEnabled ? '✅ Active' : '❌ Inactive';
-    const topUserText = stats.topUser ? `@${stats.topUser.username} (${stats.topUser.xp} XP)` : 'None';
-    
-    const statsMsg = `📊 **XP System Metrics:**
-• Users tracked: ${stats.totalUsers}
-• XP system: ${xpStatus}
-• Messages logged (24h): ${stats.recentMessages}
-• Top XP user: ${topUserText}`;
-    
-    await message.reply(statsMsg);
-  }
-  else if (content.startsWith('/purge')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 2) {
-      const targetId = args[1];
-      
-      try {
-        await purgeUserXP(targetId);
-        await message.reply(`🗑️ XP data for user ${targetId} has been deleted.`);
-      } catch (error) {
-        await message.reply('Error deleting user XP data.');
-      }
-    } else {
-      await message.reply('Usage: /purge [user_id]');
-    }
-  }
-  else if (content.startsWith('/whois')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 2) {
-      const targetId = args[1];
-      
-      try {
-        const { data: user, error } = await supabase
-          .from('user_xp')
-          .select('*')
-          .eq('user_id', targetId)
-          .single();
-        
-        if (error || !user) {
-          await message.reply('User not found in XP system.');
-          return;
-        }
-        
-        const userInfo = `**User:** <@${targetId}>
-**Level:** ${user.level}
-**XP:** ${user.xp}
-**Rank:** ${user.rank}`;
-        
-        await message.reply(userInfo);
-      } catch (error) {
-        await message.reply('Error fetching user information.');
-      }
-    } else {
-      await message.reply('Usage: /whois [user_id]');
-    }
-  }
-  else {
-    // Any other command reactivates the bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
   }
 };
 
@@ -402,9 +292,6 @@ async function updateTokenUsage(userId, tokens) {
   }
 }
 
-// Function to topup user tokens - REMOVED
-// Function removed as /topup command is not needed
-
 // Function to get uptime
 function getUptime() {
   const uptimeMs = Date.now() - config.startTime;
@@ -554,8 +441,6 @@ Assistant:`;
   }
 }
 
-// ==================== AI RESPONSE GENERATION ====================
-
 // ==================== CONFIG FUNCTIONS ====================
 
 // Load config from database
@@ -642,6 +527,109 @@ async function processCommand(message) {
       .from('config')
       .upsert({ key: 'bot_silenced', value: true });
     await message.reply('Bot is now completely silenced. Use any other command to reactivate.');
+  }
+  else if (content.startsWith('/status')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const mode = config.allowAll ? 'All users' : 'Admin-only';
+    const xpStatus = config.xpEnabled ? '✅ Enabled' : '❌ Disabled';
+    const silenceStatus = config.botSilenced ? '✅ On' : '❌ Off';
+    const channelCount = config.allowedChannels.length;
+    const uptime = getUptime();
+    
+    const statusMsg = `**Bot Status:**
+Mode: ${mode}
+XP: ${xpStatus}
+Silenced: ${silenceStatus}
+Channels: ${channelCount} added
+Uptime: ${uptime}`;
+    
+    await message.reply(statusMsg);
+  }
+  else if (content.startsWith('/stats')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const stats = await getXPStats();
+    if (!stats) {
+      await message.reply('Error fetching XP statistics.');
+      return;
+    }
+    
+    const xpStatus = config.xpEnabled ? '✅ Active' : '❌ Inactive';
+    const topUserText = stats.topUser ? `@${stats.topUser.username} (${stats.topUser.xp} XP)` : 'None';
+    
+    const statsMsg = `📊 **XP System Metrics:**
+• Users tracked: ${stats.totalUsers}
+• XP system: ${xpStatus}
+• Messages logged (24h): ${stats.recentMessages}
+• Top XP user: ${topUserText}`;
+    
+    await message.reply(statsMsg);
+  }
+  else if (content.startsWith('/purge')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 2) {
+      const targetId = args[1];
+      
+      try {
+        await purgeUserXP(targetId);
+        await message.reply(`🗑️ XP data for user ${targetId} has been deleted.`);
+      } catch (error) {
+        await message.reply('Error deleting user XP data.');
+      }
+    } else {
+      await message.reply('Usage: /purge [user_id]');
+    }
+  }
+  else if (content.startsWith('/whois')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const args = content.split(' ');
+    if (args.length === 2) {
+      const targetId = args[1];
+      
+      try {
+        const { data: user, error } = await supabase
+          .from('user_xp')
+          .select('*')
+          .eq('user_id', targetId)
+          .single();
+        
+        if (error || !user) {
+          await message.reply('User not found in XP system.');
+          return;
+        }
+        
+        const userInfo = `**User:** <@${targetId}>
+**Level:** ${user.level}
+**XP:** ${user.xp}
+**Rank:** ${user.rank}`;
+        
+        await message.reply(userInfo);
+      } catch (error) {
+        await message.reply('Error fetching user information.');
+      }
+    } else {
+      await message.reply('Usage: /whois [user_id]');
+    }
   }
   else if (content.startsWith('/xp') && !content.startsWith('/xpstop')) {
     config.xpEnabled = true;
