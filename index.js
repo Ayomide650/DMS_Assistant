@@ -49,77 +49,7 @@ const BOT_INFO = {
     name: "DMS.EXE",
     handle: "@its.justdms",
     description: "I serve DMS, a content creator known for gaming videos, especially Free Fire content."
-  else if (content.startsWith('/topup')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 3) {
-      const targetId = args[1];
-      const amount = parseInt(args[2]);
-      
-      if (!isNaN(amount) && amount > 0) {
-        const newUsage = await topupUserTokens(targetId, amount);
-        await message.reply(`Topped up ${amount} tokens for user <@${targetId}>. They now have used ${newUsage} tokens today.`);
-      } else {
-        await message.reply('Invalid amount. Please provide a positive number.');
-      }
-    } else {
-      await message.reply('Usage: /topup {user_id} [amount]');
-    }
-  }
-  else if (content.startsWith('/limit')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const args = content.split(' ');
-    if (args.length === 3 && args[1] === 'set') {
-      const limit = parseInt(args[2]);
-      
-      if (!isNaN(limit) && limit > 0) {
-        config.tokenLimit = limit;
-        await supabase
-          .from('config')
-          .update({ value: limit })
-          .eq('key', 'token_limit');
-        
-        await message.reply(`Token limit updated to ${limit} per user per day.`);
-      } else {
-        await message.reply('Invalid limit. Please provide a positive number.');
-      }
-    } else {
-      await message.reply('Usage: /limit set [new amount]');
-    }
-  }
-  else if (content.startsWith('/balance')) {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    await supabase
-      .from('config')
-      .upsert({ key: 'bot_silenced', value: false });
-    
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('*');
-    
-    if (error) {
-      await message.reply('Error fetching user balances.');
-      return;
-    }
-    
-    let response = '**User Token Usage Today:**\n';
-    for (const user of users) {
-      response += `<@${user.id}>: ${user.tokens_used_today}/${config.tokenLimit} tokens\n`;
-    }
-    
-    await message.reply(response);
-  }
+
   else if (content.startsWith('/status')) {
     // Reactivate bot if silenced
     config.botSilenced = false;
@@ -449,7 +379,7 @@ async function checkTokenUsage(userId) {
     return user.tokens_used_today;
   } catch (error) {
     console.error('Error checking token usage:', error);
-    return 0;
+    return 0; // Return 0 on error to allow continued operation
   }
 }
 
@@ -468,29 +398,12 @@ async function updateTokenUsage(userId, tokens) {
     return currentUsage + tokens;
   } catch (error) {
     console.error('Error updating token usage:', error);
-    throw error;
+    return 0; // Return 0 on error to allow continued operation
   }
 }
 
-// Function to topup user tokens
-async function topupUserTokens(userId, amount) {
-  try {
-    const currentUsage = await checkTokenUsage(userId);
-    const newUsage = Math.max(0, currentUsage - amount);
-    
-    await supabase
-      .from('users')
-      .update({ 
-        tokens_used_today: newUsage 
-      })
-      .eq('id', userId);
-    
-    return newUsage;
-  } catch (error) {
-    console.error('Error topping up tokens:', error);
-    throw error;
-  }
-}
+// Function to topup user tokens - REMOVED
+// Function removed as /topup command is not needed
 
 // Function to get uptime
 function getUptime() {
