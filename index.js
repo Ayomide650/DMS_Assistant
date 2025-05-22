@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
@@ -30,6 +30,14 @@ const config = {
   tokenLimit: 500, // Default token limit per user per day
   memoryEnabled: true, // Enable chat memory
   memoryLimit: 5, // Number of past conversations to remember per user
+  xpEnabled: false, // XP system disabled by default
+  botSilenced: false, // Bot silence mode
+};
+
+// XP Configuration
+const XP_CONFIG = {
+  xpPerMessage: 8,
+  cooldownMs: 5000, // 5 seconds
 };
 
 // Parse admin and whitelist IDs from environment variables
@@ -40,12 +48,47 @@ const WHITELIST_IDS = process.env.WHITELIST_IDS ? process.env.WHITELIST_IDS.spli
 const BOT_INFO = {
   creator: {
     name: "DMS.EXE",
-    tiktok: "@its.justdms",
-    followers: "2.1 million",
-    likes: "37 million",
-    description: "DMS.EXE is a prominent Nigerian content creator known for engaging and energetic gaming videos, primarily focusing on Garena Free Fire and Call of Duty Mobile. His content features high-skill gameplay, humorous commentary, and relatable reactions."
+    handle: "@its.justdms",
+    description: "I serve DMS, a content creator known for gaming videos."
   }
 };
+
+// XP Rank thresholds
+const RANKS = [
+  { name: 'Bronze', min: 1, max: 4 }, 
+  { name: 'Silver', min: 5, max: 9 },
+  { name: 'Gold', min: 10, max: 14 }, 
+  { name: 'Platinum', min: 15, max: 19 },
+  { name: 'Diamond', min: 20, max: 29 }, 
+  { name: 'Heroic', min: 30, max: 39 },
+  { name: 'Elite Heroic', min: 40, max: 49 }, 
+  { name: 'Master', min: 50, max: 59 },
+  { name: 'Elite Master', min: 60, max: 69 }, 
+  { name: 'Grandmaster 1', min: 70, max: 74 },
+  { name: 'Grandmaster 2', min: 75, max: 79 }, 
+  { name: 'Grandmaster 3', min: 80, max: 84 },
+  { name: 'Grandmaster 4', min: 85, max: 89 }, 
+  { name: 'Grandmaster 5', min: 90, max: 94 },
+  { name: 'Grandmaster 6', min: 95, max: 100 }
+];
+
+// XP Helper Functions
+function xpNeededForLevel(level) {
+  return Math.round(0.9344 * Math.pow(level, 2) + 39.0656);
+}
+
+function totalXpForLevel(level) {
+  let totalXp = 0;
+  for (let i = 1; i <= level; i++) totalXp += xpNeededForLevel(i);
+  return totalXp;
+}
+
+function getRankForLevel(level) {
+  for (const rank of RANKS) {
+    if (level >= rank.min && level <= rank.max) return rank.name;
+  }
+  return RANKS[RANKS.length - 1].name;
+}
 
 // Function to check if user is admin
 function isAdmin(userId) {
@@ -68,7 +111,124 @@ async function withTypingIndicator(channel, callback) {
   }
 }
 
-// ==================== MODIFIED CHAT MEMORY FUNCTIONS ====================
+// ==================== XP SYSTEM FUNCTIONS ====================
+
+// Function to get or create user XP record
+async function getUserXP(userId, username) {
+  try {
+    const { data, error } = await supabase
+      .from('user_xp')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+    
+    if (error && error.code === 'PGRST116') {
+      // User doesn't exist, create new record
+      const newUser = {
+        user_id: userId,
+        username: username,
+        xp: 0,
+        level: 1,
+        rank: 'Bronze',
+        last_message_time: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      const { data: insertData, error: insertError } = await supabase
+        .from('user_xp')
+        .insert([newUser])
+        .select()
+        .single();
+      
+      if (insertError) {
+        console.error('Error creating user XP record:', insertError);
+        return null;
+      }
+      
+      return insertData;
+    }
+    
+    if (error) {
+      console.error('Error fetching user XP:', error);
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error in getUserXP:', error);
+    return null;
+  }
+}
+
+// Function to award XP to user
+async function awardXP(userId, username) {
+  try {
+    if (!config.xpEnabled) return;
+    
+    const user = await getUserXP(userId, username);
+    if (!user) return;
+    
+    // Check cooldown
+    const now = Date.now();
+    if (user.last_message_time && (now - parseInt(user.last_message_time)) < XP_CONFIG.cooldownMs) {
+      return; // Still on cooldown
+    }
+    
+    const newXp = user.xp + XP_CONFIG.xpPerMessage;
+    let newLevel = user.level;
+    
+    // Calculate new level
+    while (newXp >= totalXpForLevel(newLevel + 1)) {
+      newLevel++;
+    }
+    
+    const newRank = getRankForLevel(newLevel);
+    
+    // Update user record
+    const { error } = await supabase
+      .from('user_xp')
+      .update({
+        username: username,
+        xp: newXp,
+        level: newLevel,
+        rank: newRank,
+        last_message_time: now.toString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', userId);
+    
+    if (error) {
+      console.error('Error updating user XP:', error);
+    }
+    
+  } catch (error) {
+    console.error('Error awarding XP:', error);
+  }
+}
+
+// Function to get leaderboard
+async function getLeaderboard(limit = 10) {
+  try {
+    const { data, error } = await supabase
+      .from('user_xp')
+      .select('*')
+      .order('xp', { ascending: false })
+      .limit(limit);
+    
+    if (error) {
+      console.error('Error fetching leaderboard:', error);
+      return [];
+    }
+    
+    return data || [];
+  } catch (error) {
+    console.error('Error in getLeaderboard:', error);
+    return [];
+  }
+}
+
+// ==================== CHAT MEMORY FUNCTIONS ====================
 
 // Function to get chat memory for a user
 async function getChatMemory(userId) {
@@ -95,7 +255,6 @@ async function getChatMemory(userId) {
       .single();
     
     if (error) {
-      // If no record exists yet, return empty array
       if (error.code === 'PGRST116') {
         return [];
       }
@@ -103,7 +262,6 @@ async function getChatMemory(userId) {
       return [];
     }
     
-    // Parse the JSONB memory field and return the array of conversations
     return data?.memory || [];
   } catch (error) {
     console.error('Error getting chat memory:', error);
@@ -114,14 +272,12 @@ async function getChatMemory(userId) {
 // Function to store a new conversation in chat memory
 async function storeChatMemory(userId, userMessage, botResponse) {
   try {
-    // Get current memory for this user
     const { data, error } = await supabase
       .from('chat_memory')
       .select('memory')
       .eq('user_id', userId)
       .single();
       
-    // Create new memory entry
     const newMemory = {
       user_message: userMessage,
       bot_response: botResponse,
@@ -132,11 +288,9 @@ async function storeChatMemory(userId, userMessage, botResponse) {
     const currentTime = new Date().toISOString();
     
     if (error) {
-      // If record doesn't exist, create new array with this memory
       memories = [newMemory];
       
       try {
-        // Try to use RPC function if available (safer with RLS)
         const { error: rpcError } = await supabase.rpc('create_chat_memory', {
           p_user_id: userId,
           p_last_message: userMessage,
@@ -147,8 +301,6 @@ async function storeChatMemory(userId, userMessage, botResponse) {
         if (rpcError) {
           console.error('Error with RPC create_chat_memory:', rpcError);
           
-          // Fallback to direct insert with RLS bypass option
-          console.log('Attempting direct insert...');
           const { error: insertError } = await supabase
             .from('chat_memory')
             .insert([{
@@ -165,7 +317,6 @@ async function storeChatMemory(userId, userMessage, botResponse) {
       } catch (funcError) {
         console.error('RPC function error:', funcError);
         
-        // Last resort - try direct insert
         const { error: insertError } = await supabase
           .from('chat_memory')
           .insert([{
@@ -180,17 +331,14 @@ async function storeChatMemory(userId, userMessage, botResponse) {
         }
       }
     } else {
-      // Get existing memories and add new one at the beginning
       memories = data?.memory || [];
       memories.unshift(newMemory);
       
-      // Keep only up to memoryLimit memories
       if (memories.length > config.memoryLimit) {
         memories = memories.slice(0, config.memoryLimit);
       }
       
       try {
-        // Try to use RPC function if available (safer with RLS)
         const { error: rpcError } = await supabase.rpc('update_chat_memory', {
           p_user_id: userId,
           p_last_message: userMessage,
@@ -201,7 +349,6 @@ async function storeChatMemory(userId, userMessage, botResponse) {
         if (rpcError) {
           console.error('Error with RPC update_chat_memory:', rpcError);
           
-          // Fallback to direct update
           const { error: updateError } = await supabase
             .from('chat_memory')
             .update({
@@ -218,7 +365,6 @@ async function storeChatMemory(userId, userMessage, botResponse) {
       } catch (funcError) {
         console.error('RPC function error:', funcError);
         
-        // Last resort - try direct update
         const { error: updateError } = await supabase
           .from('chat_memory')
           .update({
@@ -244,13 +390,11 @@ function formatChatMemory(memories) {
     return '';
   }
   
-  // Format memories - they should already be in newest-to-oldest order
   let memoryText = 'Previous conversations:\n';
   memories.forEach((memory, index) => {
     memoryText += `User: ${memory.user_message}\n`;
     memoryText += `Assistant: ${memory.bot_response}\n`;
     
-    // Add separator between memories
     if (index < memories.length - 1) {
       memoryText += '\n';
     }
@@ -262,7 +406,6 @@ function formatChatMemory(memories) {
 // Function to clear chat memory for a user
 async function clearChatMemory(userId) {
   try {
-    // First try using RPC function if available
     try {
       const { error: rpcError } = await supabase.rpc('clear_chat_memory', {
         p_user_id: userId
@@ -275,10 +418,8 @@ async function clearChatMemory(userId) {
       }
     } catch (rpcFuncError) {
       console.error('RPC clear_chat_memory not available:', rpcFuncError);
-      // Continue to fallback
     }
     
-    // Fallback to direct delete
     const { error } = await supabase
       .from('chat_memory')
       .delete()
@@ -296,21 +437,22 @@ async function clearChatMemory(userId) {
   }
 }
 
-// ==================== END MODIFIED CHAT MEMORY FUNCTIONS ====================
+// ==================== AI RESPONSE GENERATION ====================
 
 // Function to generate response from Together API
 async function generateResponse(prompt, userId) {
   try {
-    // Get chat memory if enabled
     let chatMemory = '';
     if (config.memoryEnabled) {
       const memories = await getChatMemory(userId);
       chatMemory = formatChatMemory(memories);
     }
     
-    const apiPrompt = `You are a helpful assistant for DMS.EXE.
+    const apiPrompt = `You are a helpful assistant serving DMS (${BOT_INFO.creator.handle}).
 ${BOT_INFO.creator.description}
-Be concise and helpful.
+Be helpful and concise.
+
+If someone asks about sensitivity or sensitivity settings, direct them to send their device name to #test channel.
 
 ${chatMemory ? chatMemory + '\n' : ''}
 User: ${prompt}
@@ -335,17 +477,14 @@ Assistant:`;
       }
     );
 
-    // Extract the tokens used
     const tokensUsed = response.data.usage.total_tokens;
     
-    // Update token usage in database
     if (!isWhitelisted(userId)) {
       await updateTokenUsage(userId, tokensUsed);
     }
     
     const responseText = response.data.choices[0].text.trim();
     
-    // Store the conversation in memory if enabled
     if (config.memoryEnabled) {
       await storeChatMemory(userId, prompt, responseText);
     }
@@ -360,10 +499,11 @@ Assistant:`;
   }
 }
 
-// Load config from database (We'll use config table if it exists)
+// ==================== TOKEN USAGE FUNCTIONS ====================
+
+// Load config from database
 async function loadConfig() {
   try {
-    // Try to load config from the database
     const { data: tokenLimit, error: tokenLimitError } = await supabase
       .from('config')
       .select('value')
@@ -381,12 +521,9 @@ async function loadConfig() {
       .single();
     
     if (!channelsError && allowedChannels) {
-      // Start with channels from env
       const envChannels = process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [];
       
-      // Add channels from database if they exist
       if (Array.isArray(allowedChannels.value)) {
-        // Create a Set to ensure unique channel IDs
         const channelSet = new Set([...envChannels, ...allowedChannels.value]);
         config.allowedChannels = [...channelSet];
       }
@@ -402,7 +539,6 @@ async function loadConfig() {
       config.allowAll = allowAll.value;
     }
     
-    // Try to load memory settings
     const { data: memoryEnabled, error: memoryEnabledError } = await supabase
       .from('config')
       .select('value')
@@ -423,6 +559,28 @@ async function loadConfig() {
       config.memoryLimit = memoryLimit.value;
     }
     
+    // Load XP system status
+    const { data: xpEnabled, error: xpEnabledError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'xp_enabled')
+      .single();
+    
+    if (!xpEnabledError && xpEnabled !== null) {
+      config.xpEnabled = xpEnabled.value;
+    }
+    
+    // Load bot silence status
+    const { data: botSilenced, error: botSilencedError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'bot_silenced')
+      .single();
+    
+    if (!botSilencedError && botSilenced !== null) {
+      config.botSilenced = botSilenced.value;
+    }
+    
     console.log('Config loaded from database:', config);
   } catch (error) {
     console.error('Error loading config:', error);
@@ -432,14 +590,12 @@ async function loadConfig() {
 // Function to check and update token usage
 async function checkTokenUsage(userId) {
   try {
-    // Get user data
     const { data: user } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
       .single();
     
-    // If user doesn't exist, create them
     if (!user) {
       await supabase
         .from('users')
@@ -453,13 +609,11 @@ async function checkTokenUsage(userId) {
       return 0;
     }
     
-    // Check if we need to reset the counter (it's a new day)
     const lastReset = new Date(user.last_reset);
     const today = new Date();
     if (lastReset.getDate() !== today.getDate() || 
         lastReset.getMonth() !== today.getMonth() || 
         lastReset.getFullYear() !== today.getFullYear()) {
-      // Reset token usage
       await supabase
         .from('users')
         .update({ 
@@ -480,10 +634,8 @@ async function checkTokenUsage(userId) {
 // Function to update token usage
 async function updateTokenUsage(userId, tokens) {
   try {
-    // Get current usage
     const currentUsage = await checkTokenUsage(userId);
     
-    // Update usage
     await supabase
       .from('users')
       .update({ 
@@ -501,13 +653,9 @@ async function updateTokenUsage(userId, tokens) {
 // Function to topup user tokens
 async function topupUserTokens(userId, amount) {
   try {
-    // Get current usage
     const currentUsage = await checkTokenUsage(userId);
-    
-    // Subtract the amount (effectively increasing their available tokens)
     const newUsage = Math.max(0, currentUsage - amount);
     
-    // Update usage
     await supabase
       .from('users')
       .update({ 
@@ -522,17 +670,70 @@ async function topupUserTokens(userId, amount) {
   }
 }
 
+// ==================== COMMAND PROCESSING ====================
+
 // Function to process commands
 async function processCommand(message) {
   const content = message.content.trim();
   const userId = message.author.id;
   
-  // Only admins can use commands
+  // Only admins can use commands in DMs
   if (!isAdmin(userId)) {
     return;
   }
   
-  if (content.startsWith('/admin')) {
+  if (content.startsWith('/stop')) {
+    config.botSilenced = true;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: true });
+    await message.reply('Bot is now completely silenced. Use any other command to reactivate.');
+  }
+  else if (content.startsWith('/xp') && !content.startsWith('/xpstop')) {
+    config.xpEnabled = true;
+    await supabase
+      .from('config')
+      .upsert({ key: 'xp_enabled', value: true });
+    await message.reply('XP system activated! Users will now gain XP silently for their messages.');
+  }
+  else if (content.startsWith('/xpstop')) {
+    config.xpEnabled = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'xp_enabled', value: false });
+    await message.reply('XP system stopped.');
+  }
+  else if (content.startsWith('/leaderboard')) {
+    const leaderboard = await getLeaderboard(10);
+    
+    if (leaderboard.length === 0) {
+      await message.reply('No users have gained XP yet.');
+      return;
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#0099FF')
+      .setTitle('🏆 Server Leaderboard 🏆')
+      .setDescription('Top 10 most active members')
+      .setTimestamp()
+      .setFooter({ text: 'XP Leaderboard • DMS Server' });
+    
+    let leaderboardText = leaderboard.map((user, index) => {
+      let medal = (index === 0) ? '🥇' : (index === 1) ? '🥈' : (index === 2) ? '🥉' : `${index + 1}.`;
+      return `${medal} **${user.username}** • Level: **${user.level}** • XP: **${user.xp}** • Rank: **${user.rank}**`;
+    }).join('\n\n');
+    
+    embed.addFields({ name: 'Rankings', value: leaderboardText });
+    
+    await message.reply({ embeds: [embed] });
+  }
+  else if (content.startsWith('/admin')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     await message.reply('Admin mode activated. I will only respond to admins now.');
     config.allowAll = false;
     await supabase
@@ -541,6 +742,12 @@ async function processCommand(message) {
       .eq('key', 'allow_all');
   } 
   else if (content.startsWith('/all')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     await message.reply('All users mode activated. I will respond to everyone now.');
     config.allowAll = true;
     await supabase
@@ -549,9 +756,15 @@ async function processCommand(message) {
       .eq('key', 'allow_all');
   }
   else if (content.startsWith('/channel')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     const args = content.split(' ');
     if (args.length === 3) {
-      const action = args[1]; // add or remove
+      const action = args[1];
       const channelId = args[2];
       
       if (action === 'add') {
@@ -596,6 +809,12 @@ async function processCommand(message) {
     }
   }
   else if (content.startsWith('/topup')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     const args = content.split(' ');
     if (args.length === 3) {
       const targetId = args[1];
@@ -612,6 +831,12 @@ async function processCommand(message) {
     }
   }
   else if (content.startsWith('/limit')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     const args = content.split(' ');
     if (args.length === 3 && args[1] === 'set') {
       const limit = parseInt(args[2]);
@@ -632,7 +857,12 @@ async function processCommand(message) {
     }
   }
   else if (content.startsWith('/balance')) {
-    // Get all users and their token usage
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     const { data: users, error } = await supabase
       .from('users')
       .select('*');
@@ -650,28 +880,30 @@ async function processCommand(message) {
     await message.reply(response);
   }
   else if (content.startsWith('/memory')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
     const args = content.split(' ');
     
     if (args.length >= 2) {
-      const action = args[1]; // enable, disable, clear, limit
+      const action = args[1];
       
       if (action === 'enable') {
         config.memoryEnabled = true;
-        // Update in database if config table exists
         await supabase
           .from('config')
-          .upsert({ key: 'memory_enabled', value: true })
-          .eq('key', 'memory_enabled');
+          .upsert({ key: 'memory_enabled', value: true });
         
         await message.reply('Chat memory enabled.');
       } 
       else if (action === 'disable') {
         config.memoryEnabled = false;
-        // Update in database if config table exists
         await supabase
           .from('config')
-          .upsert({ key: 'memory_enabled', value: false })
-          .eq('key', 'memory_enabled');
+          .upsert({ key: 'memory_enabled', value: false });
         
         await message.reply('Chat memory disabled.');
       }
@@ -690,11 +922,9 @@ async function processCommand(message) {
           
           if (!isNaN(limit) && limit > 0) {
             config.memoryLimit = limit;
-            // Update in database if config table exists
             await supabase
               .from('config')
-              .upsert({ key: 'memory_limit', value: limit })
-              .eq('key', 'memory_limit');
+              .upsert({ key: 'memory_limit', value: limit });
             
             await message.reply(`Memory limit updated to ${limit} conversations per user.`);
           } else {
@@ -715,7 +945,16 @@ async function processCommand(message) {
       await message.reply('Usage: /memory enable|disable|clear|limit|status [options]');
     }
   }
+  else {
+    // Any other command reactivates the bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+  }
 }
+
+// ==================== BOT EVENT HANDLERS ====================
 
 // When the bot is ready
 client.once('ready', async () => {
@@ -725,7 +964,7 @@ client.once('ready', async () => {
   await loadConfig();
   
   // Set bot status
-  client.user.setActivity('with DMS.EXE 🎮');
+  client.user.setActivity('serving DMS 🎮');
 });
 
 // Message handling
@@ -736,13 +975,29 @@ client.on('messageCreate', async (message) => {
   // Check if this is a DM
   const isDM = message.channel.type === ChannelType.DM;
   
-  // Process commands in DMs
+  // Process commands in DMs (only for admins)
   if (isDM && message.content.startsWith('/')) {
     await processCommand(message);
     return;
   }
   
-  // Check if the bot should respond
+  // If bot is silenced, don't respond to anything except admin DM commands
+  if (config.botSilenced) return;
+  
+  // Check for @everyone or @here mentions outside dedicated channels
+  const hasEveryoneHere = message.content.includes('@everyone') || message.content.includes('@here');
+  const isInDedicatedChannel = config.allowedChannels.includes(message.channel.id);
+  
+  if (hasEveryoneHere && !isInDedicatedChannel && !isDM) {
+    return; // Don't respond to @everyone/@here outside dedicated channels
+  }
+  
+  // Award XP if system is enabled and not in DM
+  if (!isDM && config.xpEnabled) {
+    await awardXP(message.author.id, message.author.username);
+  }
+  
+  // Check if the bot should respond to the message
   const shouldRespond = 
     // In a DM channel
     isDM || 
@@ -797,7 +1052,7 @@ client.on('messageCreate', async (message) => {
 
 // Start Express server
 app.get('/', (req, res) => {
-  res.send('DMS.EXE Discord Bot is running!');
+  res.send('DMS Discord Bot is running!');
 });
 
 app.listen(PORT, () => {
