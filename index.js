@@ -29,6 +29,7 @@ const config = {
   allowedChannels: process.env.DEDICATED_CHANNELS ? process.env.DEDICATED_CHANNELS.split(',') : [], 
   allowAll: false, // Whether bot responds to all users
   tokenLimit: 500, // Default token limit per user per day
+  characterLimit: 90, // Default character limit for responses
   xpEnabled: false, // XP system disabled by default
   botSilenced: false, // Bot silence mode
   maintenanceMode: false, // Maintenance mode
@@ -43,7 +44,7 @@ const XP_CONFIG = {
 };
 
 // Bot Info
-const BOT_VERSION = '3.2';
+const BOT_VERSION = '3.3';
 const BOT_DEVELOPERS = 'DMP Engineer, yilspain(.), justdms';
 
 // Parse admin and whitelist IDs from environment variables
@@ -225,6 +226,53 @@ async function getWarningCount(userId) {
 // Function to get bot ping
 function getBotPing() {
   return client.ws.ping;
+}
+
+// Function to check if user can use rank command (once per day)
+async function canUseRankCommand(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('rank_usage')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+    
+    if (error && error.code === 'PGRST116') {
+      // User doesn't exist, create new record
+      await supabase
+        .from('rank_usage')
+        .insert({
+          user_id: userId,
+          last_used: new Date().toISOString()
+        });
+      return true;
+    }
+    
+    if (error) {
+      console.error('Error checking rank usage:', error);
+      return false;
+    }
+    
+    // Check if 24 hours have passed
+    const lastUsed = new Date(data.last_used);
+    const now = new Date();
+    const timeDiff = now - lastUsed;
+    const hoursDiff = timeDiff / (1000 * 60 * 60);
+    
+    if (hoursDiff >= 24) {
+      // Update last used time
+      await supabase
+        .from('rank_usage')
+        .update({ last_used: now.toISOString() })
+        .eq('user_id', userId);
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error in canUseRankCommand:', error);
+    return false;
+  }
 }
 
 // ==================== XP SYSTEM FUNCTIONS ====================
@@ -480,8 +528,8 @@ function isSensitivityQuestion(message) {
   return sensitivityKeywords.some(keyword => lowerMessage.includes(keyword));
 }
 
-// Function to truncate response to 90 character limit
-function truncateResponse(text, maxLength = 90) {
+// Function to truncate response to character limit
+function truncateResponse(text, maxLength = config.characterLimit) {
   if (text.length <= maxLength) {
     return text;
   }
@@ -512,7 +560,7 @@ async function generateResponse(prompt, userId) {
     const apiPrompt = `You are a helpful AI assistant serving DMS (${BOT_INFO.creator.handle}).
 ${BOT_INFO.creator.description}
 
-You have comprehensive knowledge about current events, world news, science, technology, history, culture, entertainment, sports, and all general topics. Be helpful, friendly, and conversational. Keep responses very short and concise (under 90 characters).
+You have comprehensive knowledge about current events, world news, science, technology, history, culture, entertainment, sports, and all general topics. Be helpful, friendly, and conversational. Keep responses very short and concise (under ${config.characterLimit} characters).
 
 Current date: ${new Date().toLocaleDateString()}
 
@@ -545,7 +593,7 @@ Assistant:`;
     }
     const responseText = response.data.choices[0].text.trim();
     
-    // Truncate response to fit Discord's limit
+    // Truncate response to fit character limit
     const truncatedResponse = truncateResponse(responseText);
     
     return {
@@ -571,6 +619,16 @@ async function loadConfig() {
     
     if (!tokenLimitError && tokenLimit) {
       config.tokenLimit = tokenLimit.value;
+    }
+    
+    const { data: characterLimit, error: characterLimitError } = await supabase
+      .from('config')
+      .select('value')
+      .eq('key', 'character_limit')
+      .single();
+    
+    if (!characterLimitError && characterLimit) {
+      config.characterLimit = characterLimit.value;
     }
     
     const { data: allowedChannels, error: channelsError } = await supabase
@@ -665,6 +723,69 @@ async function processCommand(message) {
   const args = commandContent.split(' ');
   const command = args[0].toLowerCase();
   
+  // Handle /rank command (available to all users in dedicated channels only)
+  if (command === 'rank' && isInDedicatedChannel && !isDM) {
+    const canUse = await canUseRankCommand(userId);
+    
+    if (!canUse) {
+      const errorMsg = await message.reply('❌ You can only use the /rank command once per day!');
+      
+      // Delete both messages after 20 seconds
+      setTimeout(async () => {
+        try {
+          await message.delete();
+          await errorMsg.delete();
+        } catch (error) {
+          console.error('Error deleting rank messages:', error);
+        }
+      }, 20000);
+      return;
+    }
+    
+    const user = await getUserXP(userId, message.author.username);
+    
+    if (!user || user.xp === 0) {
+      const errorMsg = await message.reply('❌ You have no XP data. Start chatting to gain XP!');
+      
+      // Delete both messages after 20 seconds
+      setTimeout(async () => {
+        try {
+          await message.delete();
+          await errorMsg.delete();
+        } catch (error) {
+          console.error('Error deleting rank messages:', error);
+        }
+      }, 20000);
+      return;
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#00FF00')
+      .setTitle(`🏆 ${message.author.username}'s Rank`)
+      .addFields(
+        { name: 'Level', value: user.level.toString(), inline: true },
+        { name: 'Rank', value: user.rank, inline: true },
+        { name: 'Total XP', value: user.xp.toLocaleString(), inline: true },
+        { name: 'XP for Next Level', value: (totalXpForLevel(user.level + 1) - user.xp).toLocaleString(), inline: false }
+      )
+      .setTimestamp()
+      .setFooter({ text: 'Next rank check available in 24 hours' });
+    
+    const rankMsg = await message.reply({ embeds: [embed] });
+    
+    // Delete both messages after 20 seconds
+    setTimeout(async () => {
+      try {
+        await message.delete();
+        await rankMsg.delete();
+      } catch (error) {
+        console.error('Error deleting rank messages:', error);
+      }
+    }, 20000);
+    
+    return;
+  }
+  
   // Handle /botinfo command (available to all users in dedicated channels)
   if (command === 'botinfo' && isInDedicatedChannel && !isDM) {
     const ping = getBotPing();
@@ -686,205 +807,8 @@ async function processCommand(message) {
     return;
   }
   
-  // All other commands require admin privileges (except botinfo)
-  if (!isAdmin(userId)) return;
-  
-  // Admin commands can be used in DMs or server
-  if (command === 'commands') {
-    // Reactivate bot if silenced or in maintenance
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    
-    const commandsMsg = `**🤖 Available Admin Commands:**
-
-**Bot Control:**
-\`${config.commandPrefix}stop\` - Completely silence the bot
-\`${config.commandPrefix}admin\` - Set bot to admin-only mode
-\`${config.commandPrefix}all\` - Allow bot to respond to all users
-\`${config.commandPrefix}status\` - Show current bot status and uptime
-\`${config.commandPrefix}maintenance on|off\` - Enable/disable maintenance mode
-
-**XP System:**
-\`${config.commandPrefix}xp\` - Enable XP system
-\`${config.commandPrefix}xpstop\` - Disable XP system
-\`${config.commandPrefix}leaderboard\` - Show top 10 XP users
-\`${config.commandPrefix}stats\` - Show XP system statistics
-\`${config.commandPrefix}purge [user_id]\` - Delete user's XP data
-\`${config.commandPrefix}whois [user_id]\` - Show user's XP info
-
-**Moderation:**
-\`${config.commandPrefix}warn [@user] [reason]\` - Issue warning to user
-\`${config.commandPrefix}ban [@user]\` - Ban user from server
-\`${config.commandPrefix}afk [reason]\` - Set AFK status with reason
-
-**Channel Management:**
-\`${config.commandPrefix}channel add [channel_id]\` - Add dedicated channel
-\`${config.commandPrefix}channel remove [channel_id]\` - Remove dedicated channel
-\`${config.commandPrefix}channel list\` - List all dedicated channels
-
-**Configuration:**
-\`${config.commandPrefix}setprefix [symbol]\` - Change command prefix
-
-**Info:**
-\`${config.commandPrefix}botinfo\` - Show bot info (Available to all in dedicated channels)
-\`${config.commandPrefix}commands\` - Show this help message
-
-*Note: All admin commands work in DMs and server, and reactivate the bot if silenced.*`;
-    
-    await message.reply(commandsMsg);
-  }
-  else if (command === 'maintenance') {
-    if (args.length === 2) {
-      const mode = args[1].toLowerCase();
-      if (mode === 'on') {
-        config.maintenanceMode = true;
-        await supabase.from('config').upsert({ key: 'maintenance_mode', value: true });
-        await message.reply('⚙️ Maintenance mode enabled. Bot will remain silent and respond with maintenance message when questioned.');
-      } else if (mode === 'off') {
-        config.maintenanceMode = false;
-        await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-        await message.reply('✅ Maintenance mode disabled. Bot is now fully operational.');
-      } else {
-        await message.reply(`Usage: ${config.commandPrefix}maintenance on|off`);
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}maintenance on|off`);
-    }
-  }
-  else if (command === 'setprefix') {
-    if (args.length === 2) {
-      const newPrefix = args[1];
-      if (newPrefix.length === 1) {
-        config.commandPrefix = newPrefix;
-        await supabase.from('config').upsert({ key: 'command_prefix', value: newPrefix });
-        await message.reply(`✅ Command prefix changed to: \`${newPrefix}\``);
-      } else {
-        await message.reply('Prefix must be a single character.');
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}setprefix [symbol]`);
-    }
-  }
-  else if (command === 'afk') {
-    const reason = args.slice(1).join(' ') || 'No reason provided';
-    const success = await setAFK(userId, reason);
-    
-    if (success) {
-      await message.reply(`✅ AFK status set: ${reason}`);
-    } else {
-      await message.reply('❌ Failed to set AFK status.');
-    }
-  }
-  else if (command === 'warn') {
-    if (args.length >= 3 && message.mentions.users.size > 0) {
-      const targetUser = message.mentions.users.first();
-      const reason = args.slice(2).join(' ');
-      
-      const success = await addWarning(targetUser.id, reason, userId);
-      const warningCount = await getWarningCount(targetUser.id);
-      
-      if (success) {
-        await message.reply(`⚠️ Warning issued to <@${targetUser.id}>\n**Reason:** ${reason}\n**Total Warnings:** ${warningCount}`);
-      } else {
-        await message.reply('❌ Failed to issue warning.');
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}warn [@user] [reason]`);
-    }
-  }
-  else if (command === 'ban') {
-    if (message.mentions.users.size > 0) {
-      const targetUser = message.mentions.users.first();
-      
-      try {
-        // Get guild member
-        const member = await message.guild.members.fetch(targetUser.id);
-        
-        // Check if user can be banned
-        if (!member.bannable) {
-          await message.reply('❌ Cannot ban this user (insufficient permissions or user has higher role).');
-          return;
-        }
-        
-        // Ban the user
-        await member.ban({ reason: `Banned by ${message.author.tag}` });
-        await message.reply(`🔨 Successfully banned <@${targetUser.id}>`);
-        
-      } catch (error) {
-        console.error('Error banning user:', error);
-        await message.reply('❌ Failed to ban user. Make sure I have ban permissions and the user is in this server.');
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}ban [@user]`);
-    }
-  }
-  else if (command === 'stop') {
-    config.botSilenced = true;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: true });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    await message.reply('Bot is now completely silenced. Use any other command to reactivate.');
-  }
-  else if (command === 'status') {
-    // Reactivate bot if silenced
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    
-    const mode = config.allowAll ? 'All users' : 'Admin-only';
-    const xpStatus = config.xpEnabled ? '✅ Enabled' : '❌ Disabled';
-    const silenceStatus = config.botSilenced ? '✅ On' : '❌ Off';
-    const maintenanceStatus = config.maintenanceMode ? '✅ On' : '❌ Off';
-    const channelCount = config.allowedChannels.length;
-    const uptime = getUptime();
-    
-    const statusMsg = `**🤖 Bot Status:**
-    **Mode:** ${mode}
-    **XP System:** ${xpStatus}
-    **Silenced:** ${silenceStatus}
-    **Maintenance:** ${maintenanceStatus}
-    **Dedicated Channels:** ${channelCount}
-    **Uptime:** ${uptime}
-    **Ping:** ${getBotPing()}ms`;
-
-await message.reply(statusMsg);
-}
-  else if (command === 'admin') {
-    config.allowAll = false;
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'allow_all', value: false });
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    await message.reply('Bot is now in admin-only mode.');
-  }
-  else if (command === 'all') {
-    config.allowAll = true;
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'allow_all', value: true });
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    await message.reply('Bot now responds to all users.');
-  }
-  else if (command === 'xp') {
-    config.xpEnabled = true;
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'xp_enabled', value: true });
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    await message.reply('XP system enabled!');
-  }
-  else if (command === 'xpstop') {
-    config.xpEnabled = false;
-    await supabase.from('config').upsert({ key: 'xp_enabled', value: false });
-    await message.reply('XP system disabled.');
-  }
-  else if (command === 'leaderboard') {
+  // Handle /leaderboard command (available to admins in any server channel)
+  if (command === 'leaderboard' && isAdmin(userId) && !isDM) {
     const leaderboard = await getLeaderboard(10);
     
     if (leaderboard.length === 0) {
@@ -906,290 +830,402 @@ await message.reply(statusMsg);
     
     embed.setDescription(description);
     await message.reply({ embeds: [embed] });
+    return;
   }
-  else if (command === 'stats') {
-    const stats = await getXPStats();
-    const uptime = getUptime();
-    
-    if (!stats) {
-      await message.reply('❌ Failed to fetch XP statistics.');
-      return;
-    }
-    
-    const embed = new EmbedBuilder()
-      .setColor('#0099FF')
-      .setTitle('📊 XP System Statistics')
-      .addFields(
-        { name: '👥 Total Users', value: stats.totalUsers.toString(), inline: true },
-        { name: '💬 Recent Messages', value: stats.recentMessages.toString(), inline: true },
-        { name: '⏱️ Bot Uptime', value: uptime, inline: true }
-      )
-      .setTimestamp();
-    
-    if (stats.topUser) {
-      embed.addFields({
-        name: '👑 Top User',
-        value: `${stats.topUser.username}\nLevel ${stats.topUser.level} (${stats.topUser.rank}) - ${stats.topUser.xp.toLocaleString()} XP`,
-        inline: false
-      });
-    }
-    
-    await message.reply({ embeds: [embed] });
-  }
-  else if (command === 'purge') {
-    if (args.length === 2) {
-      const targetUserId = args[1];
-      
-      try {
-        await purgeUserXP(targetUserId);
-        await message.reply(`✅ Successfully purged XP data for user ID: ${targetUserId}`);
-      } catch (error) {
-        await message.reply('❌ Failed to purge user XP data.');
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}purge [user_id]`);
-    }
-  }
-  else if (command === 'whois') {
-    if (args.length === 2) {
-      const targetUserId = args[1];
-      
-      try {
-        const user = await getUserXP(targetUserId, 'Unknown');
-        
-        if (!user || user.xp === 0) {
-          await message.reply('User not found in XP database.');
+  
+  // All other commands require admin privileges and some are DM-only
+  if (!isAdmin(userId)) return;
+  
+  // DM-only admin commands
+  if (isDM) {
+    if (command === 'characterset') {
+      if (args.length === 2) {
+        const newLimit = parseInt(args[1]);
+        if (isNaN(newLimit) || newLimit < 10 || newLimit > 500) {
+          await message.reply('❌ Character limit must be a number between 10 and 500.');
           return;
         }
         
-        const embed = new EmbedBuilder()
-          .setColor('#00FF00')
-          .setTitle('👤 User XP Information')
-          .addFields(
-            { name: 'Username', value: user.username, inline: true },
-            { name: 'Level', value: user.level.toString(), inline: true },
-            { name: 'Rank', value: user.rank, inline: true },
-            { name: 'Total XP', value: user.xp.toLocaleString(), inline: true },
-            { name: 'XP for Next Level', value: (totalXpForLevel(user.level + 1) - user.xp).toLocaleString(), inline: true },
-            { name: 'Last Active', value: user.last_message_time ? `<t:${Math.floor(parseInt(user.last_message_time) / 1000)}:R>` : 'Never', inline: true }
-          )
-          .setTimestamp();
-        
-        await message.reply({ embeds: [embed] });
-      } catch (error) {
-        await message.reply('❌ Failed to fetch user information.');
+        config.characterLimit = newLimit;
+        await supabase.from('config').upsert({ key: 'character_limit', value: newLimit });
+        await message.reply(`✅ Character limit set to: ${newLimit}`);
+      } else {
+        await message.reply(`Usage: ${config.commandPrefix}characterset [amount]\nExample: ${config.commandPrefix}characterset 120`);
       }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}whois [user_id]`);
+      return;
+    }
+    
+    if (command === 'limitset') {
+      if (args.length === 2) {
+        const newLimit = parseInt(args[1]);
+        if (isNaN(newLimit) || newLimit < 100 || newLimit > 2000) {
+          await message.reply('❌ Token limit must be a number between 100 and 2000.');
+          return;
+        }
+        
+        config.tokenLimit = newLimit;
+        await supabase.from('config').upsert({ key: 'token_limit', value: newLimit });
+        await message.reply(`✅ Daily token limit set to: ${newLimit}`);
+      } else {
+        await message.reply(`Usage: ${config.commandPrefix}limitset [amount]\nExample: ${config.commandPrefix}limitset 750`);
+      }
+      return;
     }
   }
-  else if (command === 'channel') {
-    if (args.length >= 2) {
-      const subCommand = args[1].toLowerCase();
-      
-      if (subCommand === 'add' && args.length === 3) {
-        const channelId = args[2];
-        
-        if (!config.allowedChannels.includes(channelId)) {
-          config.allowedChannels.push(channelId);
-          
-          await supabase.from('config').upsert({ 
-            key: 'allowed_channels', 
-            value: config.allowedChannels 
-          });
-          
-          await message.reply(`✅ Channel <#${channelId}> added to dedicated channels.`);
-        } else {
-          await message.reply('Channel is already in the dedicated channels list.');
-        }
-      }
-      else if (subCommand === 'remove' && args.length === 3) {
-        const channelId = args[2];
-        const index = config.allowedChannels.indexOf(channelId);
-        
-        if (index > -1) {
-          config.allowedChannels.splice(index, 1);
-          
-          await supabase.from('config').upsert({ 
-            key: 'allowed_channels', 
-            value: config.allowedChannels 
-          });
-          
-          await message.reply(`✅ Channel <#${channelId}> removed from dedicated channels.`);
-        } else {
-          await message.reply('Channel is not in the dedicated channels list.');
-        }
-      }
-      else if (subCommand === 'list') {
-        if (config.allowedChannels.length === 0) {
-          await message.reply('No dedicated channels configured.');
-        } else {
-          const channelList = config.allowedChannels.map(id => `<#${id}>`).join('\n');
-          await message.reply(`**Dedicated Channels:**\n${channelList}`);
-        }
-      }
-      else {
-        await message.reply(`Usage: ${config.commandPrefix}channel add|remove|list [channel_id]`);
+  
+  // Admin commands can be used in DMs or server
+  if (command === 'commands') {
+    // Reactivate bot if silenced or in maintenance
+    config.botSilenced = false;
+    config.maintenanceMode = false;
+    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
+    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
+    
+    const commandsMsg = `**🤖 Available Admin Commands:**
+    **DM Commands (Admin Only):**
+- \`${config.commandPrefix}characterset [amount]\` - Set character limit (10-500)
+- \`${config.commandPrefix}limitset [amount]\` - Set daily token limit (100-2000)
+
+**Server Commands:**
+- \`${config.commandPrefix}rank\` - View your rank (once per day, dedicated channels only)
+- \`${config.commandPrefix}botinfo\` - Bot information (dedicated channels only)
+- \`${config.commandPrefix}leaderboard\` - Top 10 users (admin only)
+
+**General Admin Commands:**
+- \`${config.commandPrefix}commands\` - Show this list
+- \`${config.commandPrefix}status\` - Bot status
+- \`${config.commandPrefix}stats\` - Bot statistics
+- \`${config.commandPrefix}silence\` - Toggle bot silence
+- \`${config.commandPrefix}maintenance\` - Toggle maintenance mode
+- \`${config.commandPrefix}xp [on/off]\` - Toggle XP system
+- \`${config.commandPrefix}allowall [on/off]\` - Toggle allow all users
+- \`${config.commandPrefix}prefix [new_prefix]\` - Change command prefix
+- \`${config.commandPrefix}warn [@user] [reason]\` - Warn a user
+- \`${config.commandPrefix}warnings [@user]\` - Check user warnings
+- \`${config.commandPrefix}purge [@user]\` - Delete user XP data
+
+**Current Settings:**
+- Token Limit: ${config.tokenLimit}
+- Character Limit: ${config.characterLimit}
+- XP System: ${config.xpEnabled ? 'Enabled' : 'Disabled'}
+- Allow All: ${config.allowAll ? 'Yes' : 'No'}
+- Bot Silenced: ${config.botSilenced ? 'Yes' : 'No'}
+- Maintenance Mode: ${config.maintenanceMode ? 'Yes' : 'No'}
+- Command Prefix: ${config.commandPrefix}`;
+    
+    await message.reply(commandsMsg);
+    return;
+  }
+  
+  if (command === 'status') {
+    const ping = getBotPing();
+    const uptime = getUptime();
+    
+    const statusMsg = `**🤖 Bot Status:**
+• Status: ${config.maintenanceMode ? '🔧 Maintenance' : config.botSilenced ? '🔇 Silenced' : '🟢 Online'}
+• Ping: ${ping}ms
+• Uptime: ${uptime}
+• Version: ${BOT_VERSION}
+• XP System: ${config.xpEnabled ? '✅ Enabled' : '❌ Disabled'}
+• Allow All Users: ${config.allowAll ? '✅ Yes' : '❌ No'}
+• Token Limit: ${config.tokenLimit}
+• Character Limit: ${config.characterLimit}
+• Command Prefix: ${config.commandPrefix}`;
+    
+    await message.reply(statusMsg);
+    return;
+  }
+  
+  if (command === 'stats') {
+    const xpStats = await getXPStats();
+    
+    if (!xpStats) {
+      await message.reply('❌ Error fetching statistics.');
+      return;
+    }
+    
+    const statsMsg = `**📊 Bot Statistics:**
+• Total Users: ${xpStats.totalUsers}
+• Top User: ${xpStats.topUser ? `${xpStats.topUser.username} (Level ${xpStats.topUser.level})` : 'None'}
+• Recent Messages: ~${xpStats.recentMessages}
+• Uptime: ${getUptime()}
+• Version: ${BOT_VERSION}`;
+    
+    await message.reply(statsMsg);
+    return;
+  }
+  
+  if (command === 'silence') {
+    config.botSilenced = !config.botSilenced;
+    await supabase.from('config').upsert({ key: 'bot_silenced', value: config.botSilenced });
+    await message.reply(`🔇 Bot silence mode: ${config.botSilenced ? 'ON' : 'OFF'}`);
+    return;
+  }
+  
+  if (command === 'maintenance') {
+    config.maintenanceMode = !config.maintenanceMode;
+    await supabase.from('config').upsert({ key: 'maintenance_mode', value: config.maintenanceMode });
+    await message.reply(`🔧 Maintenance mode: ${config.maintenanceMode ? 'ON' : 'OFF'}`);
+    return;
+  }
+  
+  if (command === 'xp') {
+    if (args.length === 2) {
+      const setting = args[1].toLowerCase();
+      if (setting === 'on' || setting === 'off') {
+        config.xpEnabled = setting === 'on';
+        await supabase.from('config').upsert({ key: 'xp_enabled', value: config.xpEnabled });
+        await message.reply(`✨ XP system: ${config.xpEnabled ? 'ENABLED' : 'DISABLED'}`);
+      } else {
+        await message.reply(`Usage: ${config.commandPrefix}xp [on/off]`);
       }
     } else {
-      await message.reply(`Usage: ${config.commandPrefix}channel add|remove|list [channel_id]`);
+      await message.reply(`Usage: ${config.commandPrefix}xp [on/off]`);
     }
+    return;
+  }
+  
+  if (command === 'allowall') {
+    if (args.length === 2) {
+      const setting = args[1].toLowerCase();
+      if (setting === 'on' || setting === 'off') {
+        config.allowAll = setting === 'on';
+        await supabase.from('config').upsert({ key: 'allow_all', value: config.allowAll });
+        await message.reply(`👥 Allow all users: ${config.allowAll ? 'ENABLED' : 'DISABLED'}`);
+      } else {
+        await message.reply(`Usage: ${config.commandPrefix}allowall [on/off]`);
+      }
+    } else {
+      await message.reply(`Usage: ${config.commandPrefix}allowall [on/off]`);
+    }
+    return;
+  }
+  
+  if (command === 'prefix') {
+    if (args.length === 2) {
+      const newPrefix = args[1];
+      if (newPrefix.length > 3) {
+        await message.reply('❌ Prefix must be 3 characters or less.');
+        return;
+      }
+      
+      config.commandPrefix = newPrefix;
+      await supabase.from('config').upsert({ key: 'command_prefix', value: newPrefix });
+      await message.reply(`✅ Command prefix changed to: ${newPrefix}`);
+    } else {
+      await message.reply(`Usage: ${config.commandPrefix}prefix [new_prefix]\nExample: ${config.commandPrefix}prefix !`);
+    }
+    return;
+  }
+  
+  if (command === 'warn') {
+    if (args.length < 3) {
+      await message.reply(`Usage: ${config.commandPrefix}warn [@user] [reason]`);
+      return;
+    }
+    
+    const userMention = message.mentions.users.first();
+    if (!userMention) {
+      await message.reply('❌ Please mention a valid user.');
+      return;
+    }
+    
+    const reason = args.slice(2).join(' ');
+    const success = await addWarning(userMention.id, reason, userId);
+    
+    if (success) {
+      const warningCount = await getWarningCount(userMention.id);
+      await message.reply(`⚠️ Warning added to ${userMention.username}.\nReason: ${reason}\nTotal warnings: ${warningCount}`);
+    } else {
+      await message.reply('❌ Error adding warning.');
+    }
+    return;
+  }
+  
+  if (command === 'warnings') {
+    if (args.length < 2) {
+      await message.reply(`Usage: ${config.commandPrefix}warnings [@user]`);
+      return;
+    }
+    
+    const userMention = message.mentions.users.first();
+    if (!userMention) {
+      await message.reply('❌ Please mention a valid user.');
+      return;
+    }
+    
+    const warningCount = await getWarningCount(userMention.id);
+    await message.reply(`⚠️ ${userMention.username} has ${warningCount} warning(s).`);
+    return;
+  }
+  
+  if (command === 'purge') {
+    if (args.length < 2) {
+      await message.reply(`Usage: ${config.commandPrefix}purge [@user]`);
+      return;
+    }
+    
+    const userMention = message.mentions.users.first();
+    if (!userMention) {
+      await message.reply('❌ Please mention a valid user.');
+      return;
+    }
+    
+    try {
+      await purgeUserXP(userMention.id);
+      await message.reply(`🗑️ XP data purged for ${userMention.username}.`);
+    } catch (error) {
+      await message.reply('❌ Error purging user data.');
+    }
+    return;
   }
 }
 
-// ==================== MESSAGE PROCESSING ====================
+// ==================== MESSAGE HANDLING ====================
 
 // Bot ready event
 client.once('ready', async () => {
-  console.log(`Bot is ready! Logged in as ${client.user.tag}`);
-  console.log(`Bot ID: ${client.user.id}`);
-  console.log(`Servers: ${client.guilds.cache.size}`);
-  
-  // Load configuration from database
+  console.log(`${client.user.tag} is online!`);
   await loadConfig();
   
-  // Test database connection
-  try {
-    const { data, error } = await supabase.from('users').select('count').limit(1);
-    if (error) {
-      console.error('Database connection failed:', error);
-    } else {
-      console.log('Database connection successful');
-    }
-  } catch (error) {
-    console.error('Database test failed:', error);
-  }
+  // Set bot activity
+  client.user.setActivity('DMS Content', { type: 'WATCHING' });
 });
 
-// Message event handler
+// Message create event
 client.on('messageCreate', async (message) => {
   // Ignore bot messages
   if (message.author.bot) return;
   
   const userId = message.author.id;
-  const username = message.author.username;
   const isDM = message.channel.type === ChannelType.DM;
   const isInDedicatedChannel = config.allowedChannels.includes(message.channel.id);
   
-  // Check for AFK mentions in any channel (not just dedicated channels)
-  if (message.mentions.users.size > 0 && !isDM) {
-    for (const mentionedUser of message.mentions.users.values()) {
-      if (isAdmin(mentionedUser.id)) {
-        const afkData = await getAFK(mentionedUser.id);
-        if (afkData) {
-          await message.reply(`The user you have tagged is AFK: ${afkData.reason}`);
-          break; // Only respond once per message
-        }
+  // Check for AFK mentions
+  if (message.mentions.users.size > 0) {
+    for (const [mentionedUserId, mentionedUser] of message.mentions.users) {
+      const afkData = await getAFK(mentionedUserId);
+      if (afkData) {
+        const afkTime = new Date(afkData.timestamp);
+        const timeDiff = Date.now() - afkTime.getTime();
+        const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+        const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+        
+        await message.reply(`${mentionedUser.username} is AFK: ${afkData.reason} (${hours}h ${minutes}m ago)`);
       }
     }
   }
   
-  // Process commands first (works in DMs and server for admins)
+  // Remove AFK status if user sends a message
+  const userAFK = await getAFK(userId);
+  if (userAFK) {
+    await removeAFK(userId);
+    await message.reply(`Welcome back ${message.author.username}! Your AFK status has been removed.`);
+  }
+  
+  // Award XP for messages (only in dedicated channels or DMs)
+  if (config.xpEnabled && (isInDedicatedChannel || isDM)) {
+    await awardXP(userId, message.author.username);
+  }
+  
+  // Handle commands
   if (message.content.startsWith(config.commandPrefix)) {
     await processCommand(message);
     return;
   }
   
-  // Skip non-dedicated channels for regular bot responses
-  if (!isDM && !isInDedicatedChannel) return;
-  
-  // Check if bot is silenced
-  if (config.botSilenced) return;
-  
-  // Check maintenance mode
-  if (config.maintenanceMode) {
-    await message.reply('🔧 Bot is currently under maintenance. Please try again later.');
+  // Handle AFK command without prefix
+  if (message.content.toLowerCase().startsWith('afk ')) {
+    const reason = message.content.slice(4).trim() || 'No reason provided';
+    const success = await setAFK(userId, reason);
+    
+    if (success) {
+      await message.reply(`${message.author.username}, you are now AFK: ${reason}`);
+    } else {
+      await message.reply('❌ Error setting AFK status.');
+    }
     return;
   }
   
-  // Check permissions (admin-only vs all users)
-  if (!config.allowAll && !isWhitelisted(userId)) return;
+  // Skip bot response if silenced or in maintenance
+  if (config.botSilenced || config.maintenanceMode) return;
   
-  // Award XP for messages in dedicated channels (not DMs)
-  if (!isDM && config.xpEnabled) {
-    await awardXP(userId, username);
-  }
+  // Skip if bot is not enabled
+  if (!config.botEnabled) return;
   
-  // Check token usage for non-whitelisted users
+  // Check if message should trigger bot response
+  const shouldRespond = (
+    isDM || // Always respond in DMs
+    isInDedicatedChannel || // Respond in dedicated channels
+    config.allowAll || // Respond to all if enabled
+    isWhitelisted(userId) // Respond to whitelisted users
+  );
+  
+  if (!shouldRespond) return;
+  
+  // Check if message mentions the bot
+  const botMentioned = message.mentions.has(client.user) || 
+                      message.content.toLowerCase().includes('dms') ||
+                      message.content.toLowerCase().includes('bot');
+  
+  // Only respond if bot is mentioned (unless in DMs or dedicated channels)
+  if (!isDM && !isInDedicatedChannel && !botMentioned) return;
+  
+  // Check token limit (skip for whitelisted users)
   if (!isWhitelisted(userId)) {
     const tokensUsed = await checkTokenUsage(userId);
+    
     if (tokensUsed >= config.tokenLimit) {
-      await message.reply(`You've reached your daily token limit of ${config.tokenLimit}. Try again tomorrow!`);
+      await message.reply('❌ You have reached your daily token limit. Try again tomorrow!');
       return;
     }
   }
   
-  // Generate and send response
   try {
     await withTypingIndicator(message.channel, async () => {
       const response = await generateResponse(message.content, userId);
-      await message.reply(response.text);
+      
+      if (response.text) {
+        await message.reply(response.text);
+      }
     });
   } catch (error) {
     console.error('Error processing message:', error);
-    
-    if (error.response && error.response.status === 429) {
-      await message.reply('I\'m being rate limited. Please try again in a moment.');
-    } else if (error.response && error.response.status === 401) {
-      await message.reply('API authentication failed. Please contact an administrator.');
-    } else {
-      await message.reply('Sorry, I encountered an error while processing your message.');
-    }
+    await message.reply('❌ Sorry, I encountered an error processing your message.');
   }
 });
 
-// Handle member updates (for removing AFK when user becomes active)
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  
-  const userId = message.author.id;
-  
-  // Remove AFK status when admin sends a message
-  if (isAdmin(userId)) {
-    const afkData = await getAFK(userId);
-    if (afkData) {
-      await removeAFK(userId);
-      await message.reply(`Welcome back! Your AFK status has been removed. You were away for: ${afkData.reason}`);
-    }
-  }
-});
-
-// Error handling
-client.on('error', (error) => {
-  console.error('Discord client error:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled promise rejection:', error);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-  process.exit(1);
-});
-
-// Express server for health checks
+// Express routes
 app.get('/', (req, res) => {
-  res.json({
-    status: 'Bot is running',
-    uptime: getUptime(),
-    ping: getBotPing(),
-    version: BOT_VERSION
-  });
+  res.send('DMS Discord Bot is running!');
 });
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: getUptime()
+    uptime: getUptime(),
+    version: BOT_VERSION,
+    ping: getBotPing()
   });
 });
 
 // Start Express server
 app.listen(PORT, () => {
-  console.log(`Express server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
-// Start Discord bot
+// Login to Discord
 client.login(process.env.DISCORD_TOKEN);
+
+// Handle process termination
+process.on('SIGINT', () => {
+  console.log('Received SIGINT. Graceful shutdown...');
+  client.destroy();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM. Graceful shutdown...');
+  client.destroy();
+  process.exit(0);
+});
