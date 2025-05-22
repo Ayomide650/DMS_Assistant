@@ -521,7 +521,42 @@ async function processCommand(message) {
     return;
   }
   
-  if (content.startsWith('/stop')) {
+  if (content.startsWith('/commands')) {
+    // Reactivate bot if silenced
+    config.botSilenced = false;
+    await supabase
+      .from('config')
+      .upsert({ key: 'bot_silenced', value: false });
+    
+    const commandsMsg = `**🤖 Available Admin Commands:**
+
+**Bot Control:**
+\`/stop\` - Completely silence the bot
+\`/admin\` - Set bot to admin-only mode
+\`/all\` - Allow bot to respond to all users
+\`/status\` - Show current bot status and uptime
+
+**XP System:**
+\`/xp\` - Enable XP system
+\`/xpstop\` - Disable XP system
+\`/leaderboard\` - Show top 10 XP users
+\`/stats\` - Show XP system statistics
+\`/purge [user_id]\` - Delete user's XP data
+\`/whois [user_id]\` - Show user's XP info
+
+**Channel Management:**
+\`/channel add [channel_id]\` - Add dedicated channel
+\`/channel remove [channel_id]\` - Remove dedicated channel
+\`/channel list\` - List all dedicated channels
+
+**Info:**
+\`/commands\` - Show this help message
+
+*Note: All commands work in DMs and reactivate the bot if silenced.*`;
+    
+    await message.reply(commandsMsg);
+  }
+  else if (content.startsWith('/stop')) {
     config.botSilenced = true;
     await supabase
       .from('config')
