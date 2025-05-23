@@ -1,32 +1,32 @@
 {
-  "name": "dms-exe-discord-bot",
-  "version": "1.0.0",
-  "description": "Discord bot for DMS.EXE using DeepSeek LLM",
+  "name": "discord-bot",
+  "version": "3.5.0",
+  "description": "Discord bot with giveaway system and XP tracking",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": [
-    "discord",
-    "bot",
-    "llm",
-    "deepseek",
-    "together"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0",
-    "axios": "^1.6.2",
     "discord.js": "^14.14.1",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2"
+    "@supabase/supabase-js": "^2.39.0",
+    "express": "^4.18.2",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=16.6.0"
-  }
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "giveaway",
+    "xp",
+    "gaming"
+  ],
+  "author": "DMP Engineer, yilspain(.)",
+  "license": "MIT"
 }
