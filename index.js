@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, ButtonBuilder, ActionRowBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
@@ -44,8 +44,9 @@ const XP_CONFIG = {
 };
 
 // Bot Info
-const BOT_VERSION = '3.3';
-const BOT_DEVELOPERS = 'DMP Engineer, yilspain(.), justdms';
+const BOT_VERSION = '3.5';
+const BOT_DEVELOPERS = 'DMP Engineer, yilspain(.)';
+const BOT_OWNER = 'justdms';
 
 // Parse admin and whitelist IDs from environment variables
 const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
@@ -79,6 +80,10 @@ const RANKS = [
   { name: 'Grandmaster 6', min: 95, max: 100 }
 ];
 
+// Store for pending item creations and active giveaways
+const pendingItems = new Map();
+const activeGiveaways = new Map();
+
 // XP Helper Functions
 function xpNeededForLevel(level) {
   return Math.round(0.9344 * Math.pow(level, 2) + 39.0656);
@@ -97,9 +102,14 @@ function getRankForLevel(level) {
   return RANKS[RANKS.length - 1].name;
 }
 
-// Function to check if user is admin
+// Function to check if user is bot admin
 function isAdmin(userId) {
   return ADMIN_IDS.includes(userId);
+}
+
+// Function to check if user is server admin
+function isServerAdmin(member) {
+  return member.permissions.has(PermissionsBitField.Flags.Administrator);
 }
 
 // Function to check if user is whitelisted
@@ -118,7 +128,177 @@ async function withTypingIndicator(channel, callback) {
   }
 }
 
-// ==================== NEW FEATURES FUNCTIONS ====================
+// ==================== GIVEAWAY FUNCTIONS ====================
+
+// Function to save giveaway item
+async function saveGiveawayItem(name, imageUrl) {
+  try {
+    const { error } = await supabase
+      .from('giveaway_items')
+      .upsert({
+        name: name.toLowerCase(),
+        display_name: name,
+        image_url: imageUrl,
+        created_at: new Date().toISOString()
+      });
+    
+    if (error) {
+      console.error('Error saving giveaway item:', error);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error('Error in saveGiveawayItem:', error);
+    return false;
+  }
+}
+
+// Function to get giveaway item
+async function getGiveawayItem(name) {
+  try {
+    const { data, error } = await supabase
+      .from('giveaway_items')
+      .select('*')
+      .eq('name', name.toLowerCase())
+      .single();
+    
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error getting giveaway item:', error);
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error in getGiveawayItem:', error);
+    return null;
+  }
+}
+
+// Function to create giveaway
+async function createGiveaway(guildId, channelId, messageId, itemName, imageUrl) {
+  try {
+    const { data, error } = await supabase
+      .from('active_giveaways')
+      .insert({
+        guild_id: guildId,
+        channel_id: channelId,
+        message_id: messageId,
+        item_name: itemName,
+        image_url: imageUrl,
+        participants: [],
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Error creating giveaway:', error);
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error in createGiveaway:', error);
+    return null;
+  }
+}
+
+// Function to add participant to giveaway
+async function addGiveawayParticipant(messageId, userId) {
+  try {
+    const { data: giveaway, error: fetchError } = await supabase
+      .from('active_giveaways')
+      .select('*')
+      .eq('message_id', messageId)
+      .single();
+    
+    if (fetchError) {
+      console.error('Error fetching giveaway:', fetchError);
+      return false;
+    }
+    
+    const participants = giveaway.participants || [];
+    
+    if (participants.includes(userId)) {
+      return false; // Already participating
+    }
+    
+    participants.push(userId);
+    
+    const { error: updateError } = await supabase
+      .from('active_giveaways')
+      .update({ participants })
+      .eq('message_id', messageId);
+    
+    if (updateError) {
+      console.error('Error updating giveaway participants:', updateError);
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error in addGiveawayParticipant:', error);
+    return false;
+  }
+}
+
+// Function to get giveaway participants
+async function getGiveawayParticipants(messageId) {
+  try {
+    const { data, error } = await supabase
+      .from('active_giveaways')
+      .select('participants')
+      .eq('message_id', messageId)
+      .single();
+    
+    if (error) {
+      console.error('Error getting giveaway participants:', error);
+      return [];
+    }
+    
+    return data.participants || [];
+  } catch (error) {
+    console.error('Error in getGiveawayParticipants:', error);
+    return [];
+  }
+}
+
+// Function to end giveaway and pick winner
+async function endGiveaway(messageId) {
+  try {
+    const { data: giveaway, error } = await supabase
+      .from('active_giveaways')
+      .select('*')
+      .eq('message_id', messageId)
+      .single();
+    
+    if (error) {
+      console.error('Error fetching giveaway for ending:', error);
+      return null;
+    }
+    
+    const participants = giveaway.participants || [];
+    
+    if (participants.length === 0) {
+      return { winner: null, participants: [] };
+    }
+    
+    const winnerId = participants[Math.floor(Math.random() * participants.length)];
+    
+    // Delete the giveaway from active giveaways
+    await supabase
+      .from('active_giveaways')
+      .delete()
+      .eq('message_id', messageId);
+    
+    return { winner: winnerId, participants, itemName: giveaway.item_name };
+  } catch (error) {
+    console.error('Error in endGiveaway:', error);
+    return null;
+  }
+}
+
+// ==================== EXISTING FUNCTIONS (AFK, WARNINGS, XP, etc.) ====================
 
 // Function to set/get AFK status
 async function setAFK(userId, reason) {
@@ -552,17 +732,12 @@ async function generateResponse(prompt, userId) {
     // Check if it's a sensitivity question
     if (isSensitivityQuestion(prompt)) {
       return {
-        text: "If you need sensitivity settings, please send your device name to #test channel and wait for assistance! 🎮",
+        text: "If you need sensitivity settings, please send your device name to the test channel and wait for assistance! 🎮",
         tokensUsed: 0
       };
     }
     
-    const apiPrompt = `You are a helpful AI assistant serving DMS (${BOT_INFO.creator.handle}).
-${BOT_INFO.creator.description}
-
-You have comprehensive knowledge about current events, world news, science, technology, history, culture, entertainment, sports, and all general topics. Be helpful, friendly, and conversational. Keep responses very short and concise (under ${config.characterLimit} characters).
-
-Current date: ${new Date().toLocaleDateString()}
+    const apiPrompt = `You are a helpful AI assistant for a gaming community. Respond naturally and directly to the user's message. Keep responses concise (under ${config.characterLimit} characters). Be helpful and friendly.
 
 User: ${prompt}
 Assistant:`;
@@ -572,7 +747,7 @@ Assistant:`;
       {
         model: 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
         prompt: apiPrompt,
-        max_tokens: 50, // Reduced for shorter responses
+        max_tokens: 50,
         temperature: 0.7,
         top_p: 0.9,
         frequency_penalty: 0,
@@ -722,388 +897,376 @@ async function processCommand(message) {
   const commandContent = content.slice(config.commandPrefix.length);
   const args = commandContent.split(' ');
   const command = args[0].toLowerCase();
-  
-  // Handle /rank command (available to all users in dedicated channels only)
-  if (command === 'rank' && isInDedicatedChannel && !isDM) {
-    const canUse = await canUseRankCommand(userId);
-    
-    if (!canUse) {
-      const errorMsg = await message.reply('❌ You can only use the /rank command once per day!');
-      
-      // Delete both messages after 20 seconds
-      setTimeout(async () => {
-        try {
-          await message.delete();
-          await errorMsg.delete();
-        } catch (error) {
-          console.error('Error deleting rank messages:', error);
-        }
-      }, 20000);
-      return;
-    }
-    
-    const user = await getUserXP(userId, message.author.username);
-    
-    if (!user || user.xp === 0) {
-      const errorMsg = await message.reply('❌ You have no XP data. Start chatting to gain XP!');
-      
-      // Delete both messages after 20 seconds
-      setTimeout(async () => {
-        try {
-          await message.delete();
-          await errorMsg.delete();
-        } catch (error) {
-          console.error('Error deleting rank messages:', error);
-        }
-      }, 20000);
-      return;
-    }
-    
-    const embed = new EmbedBuilder()
-      .setColor('#00FF00')
-      .setTitle(`🏆 ${message.author.username}'s Rank`)
-      .addFields(
-        { name: 'Level', value: user.level.toString(), inline: true },
-        { name: 'Rank', value: user.rank, inline: true },
-        { name: 'Total XP', value: user.xp.toLocaleString(), inline: true },
-        { name: 'XP for Next Level', value: (totalXpForLevel(user.level + 1) - user.xp).toLocaleString(), inline: false }
-      )
-      .setTimestamp()
-      .setFooter({ text: 'Next rank check available in 24 hours' });
-    
-    const rankMsg = await message.reply({ embeds: [embed] });
-    
-    // Delete both messages after 20 seconds
-    setTimeout(async () => {
-      try {
-        await message.delete();
-        await rankMsg.delete();
-      } catch (error) {
-        console.error('Error deleting rank messages:', error);
-      }
-    }, 20000);
-    
+
+  // Handle /item command (bot admin only, DM only)
+  if (command === 'item' && isAdmin(userId) && isDM) {
+    await message.reply('Please send the name of the item you want to add to the giveaway system:');
+    pendingItems.set(userId, { step: 'waiting_for_name' });
     return;
   }
-  
-  // Handle /botinfo command (available to all users in dedicated channels)
-  if (command === 'botinfo' && isInDedicatedChannel && !isDM) {
-    const ping = getBotPing();
-    const uptime = getUptime();
-    
+
+  // Handle /giveaway command (server admins only, server channels only)
+  if (command === 'giveaway' && !isDM) {
+    const member = message.guild.members.cache.get(userId);
+    if (!member || !isServerAdmin(member)) {
+      await message.reply('❌ You need Administrator permissions to use this command!');
+      return;
+    }
+
+    if (args.length < 2) {
+      await message.reply(`Usage: ${config.commandPrefix}giveaway [item name]\nExample: ${config.commandPrefix}giveaway booyah pass`);
+      return;
+    }
+
+    const itemName = args.slice(1).join(' ');
+    const item = await getGiveawayItem(itemName);
+
+    if (!item) {
+      await message.reply(`❌ Item "${itemName}" not found! Ask a bot admin to add it using ${config.commandPrefix}item in DMs.`);
+      return;
+    }
+
+    // Create giveaway embed
     const embed = new EmbedBuilder()
-      .setColor('#0099FF')
-      .setTitle('🤖 Bot Information')
+      .setColor('#FF6B6B')
+      .setTitle(`🎉 FREE FIRE GIVEAWAY!`)
+      .setDescription(`${winners > 1 ? `${winners} lucky people` : 'One lucky person'} will win **${item.display_name}** in Free Fire! Participate now!\n\nClick 🎁 to participate!`)
+      .setImage(item.image_url)
+      .setFooter({ text: `Winners: ${winners} | Ends when admin types "start"` })
+      .setTimestamp();
+
+    // Create buttons
+    const participateButton = new ButtonBuilder()
+      .setCustomId('giveaway_participate')
+      .setLabel('🎁 Participate')
+      .setStyle(ButtonStyle.Primary);
+
+    const participantsButton = new ButtonBuilder()
+      .setCustomId('giveaway_participants')
+      .setLabel('👥 Participants')
+      .setStyle(ButtonStyle.Secondary);
+
+    const row = new ActionRowBuilder()
+      .addComponents(participateButton, participantsButton);
+
+    // Send giveaway message with @everyone mention
+    const giveawayMessage = await message.channel.send({
+      content: '@everyone',
+      embeds: [embed],
+      components: [row]
+    });
+
+    // Save giveaway to database
+    const giveaway = await createGiveaway(
+      message.guild.id,
+      message.channel.id,
+      giveawayMessage.id,
+      item.display_name,
+      item.image_url,
+      winners
+    );
+
+    if (giveaway) {
+      await message.reply(`✅ Giveaway for **${item.display_name}** has been created with ${winners} winner${winners > 1 ? 's' : ''}! Type "start" while replying to the giveaway message to end it.`);
+  // Handle "start" command for ending giveaways (server admins only)
+  if (command === 'start' && !isDM && message.reference) {
+    const member = message.guild.members.cache.get(userId);
+    if (!member || !isServerAdmin(member)) {
+      await message.reply('❌ You need Administrator permissions to start giveaways!');
+      return;
+    }
+
+    try {
+      const referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+      const result = await endGiveaway(referencedMessage.id);
+
+      if (!result) {
+        await message.reply('❌ No active giveaway found for this message!');
+        return;
+      }
+
+      if (result.participants.length === 0) {
+        await message.reply('❌ No one participated in this giveaway!');
+        return;
+      }
+
+      // Pick multiple winners if specified
+      const winners = [];
+      const participantsCopy = [...result.participants];
+      const winnersCount = Math.min(result.winnersCount || 1, participantsCopy.length);
+
+      for (let i = 0; i < winnersCount; i++) {
+        const randomIndex = Math.floor(Math.random() * participantsCopy.length);
+        winners.push(participantsCopy[randomIndex]);
+        participantsCopy.splice(randomIndex, 1);
+      }
+
+      // Create winners announcement
+      const winnerMentions = winners.map(winnerId => `<@${winnerId}>`).join(', ');
+      const embed = new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('🎉 GIVEAWAY ENDED!')
+        .setDescription(`Congratulations to the ${winners.length > 1 ? 'winners' : 'winner'}!\n\n🏆 **${winnerMentions}**\n\nYou won: **${result.itemName}**!`)
+        .setFooter({ text: `Total participants: ${result.participants.length}` })
+        .setTimestamp();
+
+      await message.channel.send({ embeds: [embed] });
+      await message.reply(`✅ Giveaway ended! ${winners.length} winner${winners.length > 1 ? 's' : ''} selected.`);
+    } catch (error) {
+      console.error('Error ending giveaway:', error);
+      await message.reply('❌ Error ending giveaway. Please try again.');
+    }
+    return;
+  }
+
+  // Other existing commands...
+  if (command === 'ping') {
+    const ping = getBotPing();
+    await message.reply(`🏓 Pong! Bot latency: ${ping}ms`);
+    return;
+  }
+
+  if (command === 'uptime') {
+    const uptime = getUptime();
+    await message.reply(`⏰ Bot uptime: ${uptime}`);
+    return;
+  }
+
+  if (command === 'version') {
+    await message.reply(`🤖 Bot version: ${BOT_VERSION}`);
+    return;
+  }
+
+  if (command === 'commands' || command === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor('#0099ff')
+      .setTitle('📋 Available Commands')
+      .setDescription('Here are all the available commands:')
       .addFields(
-        { name: '📊 Version', value: BOT_VERSION, inline: true },
-        { name: '👨‍💻 Developers', value: BOT_DEVELOPERS, inline: true },
-        { name: '⏱️ Uptime', value: uptime, inline: true },
-        { name: '📡 Ping', value: `${ping}ms`, inline: true }
+        { name: '🎮 General Commands', value: `${config.commandPrefix}ping - Check bot latency\n${config.commandPrefix}uptime - Check bot uptime\n${config.commandPrefix}version - Check bot version\n${config.commandPrefix}commands - Show this help menu`, inline: false },
+        { name: '🎁 Giveaway Commands (Server Admins)', value: `${config.commandPrefix}giveaway [item] [winners] - Start a giveaway\n${config.commandPrefix}start - End giveaway (reply to giveaway message)`, inline: false },
+        { name: '⚙️ Admin Commands (Bot Admins)', value: `${config.commandPrefix}item - Add giveaway item (DM only)`, inline: false },
+        { name: '📊 XP System', value: `${config.commandPrefix}rank - Check your rank\n${config.commandPrefix}leaderboard - View top players`, inline: false },
+        { name: '💤 AFK System', value: `${config.commandPrefix}afk [reason] - Set AFK status\nMention someone to check their AFK status`, inline: false }
       )
-      .setTimestamp()
-      .setFooter({ text: 'DMS Discord Bot' });
+      .setFooter({ text: `Bot Owner: ${BOT_OWNER} | Developers: ${BOT_DEVELOPERS}` });
     
     await message.reply({ embeds: [embed] });
     return;
   }
-  
-  // Handle /leaderboard command (available to admins in any server channel)
-  if (command === 'leaderboard' && isAdmin(userId) && !isDM) {
-    const leaderboard = await getLeaderboard(10);
+
+  // AFK command
+  if (command === 'afk') {
+    const reason = args.slice(1).join(' ') || 'No reason provided';
+    const success = await setAFK(userId, reason);
     
-    if (leaderboard.length === 0) {
-      await message.reply('No XP data found.');
+    if (success) {
+      await message.reply(`💤 You are now AFK: ${reason}`);
+    } else {
+      await message.reply('❌ Failed to set AFK status!');
+    }
+    return;
+  }
+
+  // Rank command (once per day)
+  if (command === 'rank') {
+    if (!config.xpEnabled) {
+      await message.reply('❌ XP system is currently disabled!');
       return;
     }
-    
+
+    const canUse = await canUseRankCommand(userId);
+    if (!canUse) {
+      await message.reply('⏰ You can only use the rank command once per day!');
+      return;
+    }
+
+    const userXP = await getUserXP(userId, message.author.username);
+    if (!userXP) {
+      await message.reply('❌ Error fetching your XP data!');
+      return;
+    }
+
     const embed = new EmbedBuilder()
       .setColor('#FFD700')
-      .setTitle('🏆 XP Leaderboard - Top 10')
-      .setTimestamp();
-    
+      .setTitle('🏆 Your Rank')
+      .setThumbnail(message.author.displayAvatarURL())
+      .addFields(
+        { name: 'Level', value: userXP.level.toString(), inline: true },
+        { name: 'XP', value: userXP.xp.toString(), inline: true },
+        { name: 'Rank', value: userXP.rank, inline: true }
+      )
+      .setFooter({ text: 'You can use this command once per day' });
+
+    await message.reply({ embeds: [embed] });
+    return;
+  }
+
+  // Leaderboard command
+  if (command === 'leaderboard' || command === 'lb') {
+    if (!config.xpEnabled) {
+      await message.reply('❌ XP system is currently disabled!');
+      return;
+    }
+
+    const leaderboard = await getLeaderboard(10);
+    if (leaderboard.length === 0) {
+      await message.reply('📊 No XP data available yet!');
+      return;
+    }
+
     let description = '';
     leaderboard.forEach((user, index) => {
       const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-      description += `${medal} **${user.username}**\n`;
-      description += `   Level ${user.level} (${user.rank}) - ${user.xp.toLocaleString()} XP\n\n`;
+      description += `${medal} **${user.username}** - Level ${user.level} (${user.xp} XP)\n`;
     });
-    
-    embed.setDescription(description);
+
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('🏆 XP Leaderboard')
+      .setDescription(description)
+      .setFooter({ text: 'Top 10 players by XP' });
+
     await message.reply({ embeds: [embed] });
     return;
   }
-  
-  // All other commands require admin privileges and some are DM-only
-  if (!isAdmin(userId)) return;
-  
-  // DM-only admin commands
-  if (isDM) {
-    if (command === 'characterset') {
-      if (args.length === 2) {
-        const newLimit = parseInt(args[1]);
-        if (isNaN(newLimit) || newLimit < 10 || newLimit > 500) {
-          await message.reply('❌ Character limit must be a number between 10 and 500.');
-          return;
-        }
-        
-        config.characterLimit = newLimit;
-        await supabase.from('config').upsert({ key: 'character_limit', value: newLimit });
-        await message.reply(`✅ Character limit set to: ${newLimit}`);
-      } else {
-        await message.reply(`Usage: ${config.commandPrefix}characterset [amount]\nExample: ${config.commandPrefix}characterset 120`);
-      }
-      return;
-    }
-    
-    if (command === 'limitset') {
-      if (args.length === 2) {
-        const newLimit = parseInt(args[1]);
-        if (isNaN(newLimit) || newLimit < 100 || newLimit > 2000) {
-          await message.reply('❌ Token limit must be a number between 100 and 2000.');
-          return;
-        }
-        
-        config.tokenLimit = newLimit;
-        await supabase.from('config').upsert({ key: 'token_limit', value: newLimit });
-        await message.reply(`✅ Daily token limit set to: ${newLimit}`);
-      } else {
-        await message.reply(`Usage: ${config.commandPrefix}limitset [amount]\nExample: ${config.commandPrefix}limitset 750`);
-      }
-      return;
-    }
-  }
-  
-  // Admin commands can be used in DMs or server
-  if (command === 'commands') {
-    // Reactivate bot if silenced or in maintenance
-    config.botSilenced = false;
-    config.maintenanceMode = false;
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: false });
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: false });
-    
-    const commandsMsg = `**🤖 Available Admin Commands:**
-  **DM Commands (Admin Only):**
-- \`${config.commandPrefix}characterset [amount]\` - Set character limit (10-500)
-- \`${config.commandPrefix}limitset [amount]\` - Set daily token limit (100-2000)
 
-**Server Commands:**
-- \`${config.commandPrefix}rank\` - View your rank (once per day, dedicated channels only)
-- \`${config.commandPrefix}botinfo\` - Bot information (dedicated channels only)
-- \`${config.commandPrefix}leaderboard\` - Top 10 users (admin only)
+  // Admin commands
+  if (isAdmin(userId)) {
+    if (command === 'stats') {
+      const xpStats = await getXPStats();
+      const embed = new EmbedBuilder()
+        .setColor('#0099ff')
+        .setTitle('📊 Bot Statistics')
+        .addFields(
+          { name: 'Bot Version', value: BOT_VERSION, inline: true },
+          { name: 'Uptime', value: getUptime(), inline: true },
+          { name: 'Latency', value: `${getBotPing()}ms`, inline: true },
+          { name: 'XP System', value: config.xpEnabled ? 'Enabled' : 'Disabled', inline: true },
+          { name: 'Maintenance Mode', value: config.maintenanceMode ? 'ON' : 'OFF', inline: true },
+          { name: 'Bot Silenced', value: config.botSilenced ? 'YES' : 'NO', inline: true }
+        );
 
-**General Admin Commands:**
-- \`${config.commandPrefix}commands\` - Show this list
-- \`${config.commandPrefix}status\` - Bot status
-- \`${config.commandPrefix}stats\` - Bot statistics
-- \`${config.commandPrefix}silence\` - Toggle bot silence
-- \`${config.commandPrefix}maintenance\` - Toggle maintenance mode
-- \`${config.commandPrefix}xp [on/off]\` - Toggle XP system
-- \`${config.commandPrefix}allowall [on/off]\` - Toggle allow all users
-- \`${config.commandPrefix}prefix [new_prefix]\` - Change command prefix
-- \`${config.commandPrefix}warn [@user] [reason]\` - Warn a user
-- \`${config.commandPrefix}warnings [@user]\` - Check user warnings
-- \`${config.commandPrefix}purge [@user]\` - Delete user XP data
+      if (xpStats) {
+        embed.addFields(
+          { name: 'Total XP Users', value: xpStats.totalUsers.toString(), inline: true },
+          { name: 'Top Player', value: xpStats.topUser ? `${xpStats.topUser.username} (${xpStats.topUser.xp} XP)` : 'None', inline: true },
+          { name: 'Recent Messages', value: xpStats.recentMessages.toString(), inline: true }
+        );
+      }
 
-**Current Settings:**
-- Token Limit: ${config.tokenLimit}
-- Character Limit: ${config.characterLimit}
-- XP System: ${config.xpEnabled ? 'Enabled' : 'Disabled'}
-- Allow All: ${config.allowAll ? 'Yes' : 'No'}
-- Bot Silenced: ${config.botSilenced ? 'Yes' : 'No'}
-- Maintenance Mode: ${config.maintenanceMode ? 'Yes' : 'No'}
-- Command Prefix: ${config.commandPrefix}`;
-    
-    await message.reply(commandsMsg);
-    return;
-  }
-  
-  if (command === 'status') {
-    const ping = getBotPing();
-    const uptime = getUptime();
-    
-    const statusMsg = `**🤖 Bot Status:**
-• Status: ${config.maintenanceMode ? '🔧 Maintenance' : config.botSilenced ? '🔇 Silenced' : '🟢 Online'}
-• Ping: ${ping}ms
-• Uptime: ${uptime}
-• Version: ${BOT_VERSION}
-• XP System: ${config.xpEnabled ? '✅ Enabled' : '❌ Disabled'}
-• Allow All Users: ${config.allowAll ? '✅ Yes' : '❌ No'}
-• Token Limit: ${config.tokenLimit}
-• Character Limit: ${config.characterLimit}
-• Command Prefix: ${config.commandPrefix}`;
-    
-    await message.reply(statusMsg);
-    return;
-  }
-  
-  if (command === 'stats') {
-    const xpStats = await getXPStats();
-    
-    if (!xpStats) {
-      await message.reply('❌ Error fetching statistics.');
+      await message.reply({ embeds: [embed] });
       return;
     }
-    
-    const statsMsg = `**📊 Bot Statistics:**
-• Total Users: ${xpStats.totalUsers}
-• Top User: ${xpStats.topUser ? `${xpStats.topUser.username} (Level ${xpStats.topUser.level})` : 'None'}
-• Recent Messages: ~${xpStats.recentMessages}
-• Uptime: ${getUptime()}
-• Version: ${BOT_VERSION}`;
-    
-    await message.reply(statsMsg);
-    return;
-  }
-  
-  if (command === 'silence') {
-    config.botSilenced = !config.botSilenced;
-    await supabase.from('config').upsert({ key: 'bot_silenced', value: config.botSilenced });
-    await message.reply(`🔇 Bot silence mode: ${config.botSilenced ? 'ON' : 'OFF'}`);
-    return;
-  }
-  
-  if (command === 'maintenance') {
-    config.maintenanceMode = !config.maintenanceMode;
-    await supabase.from('config').upsert({ key: 'maintenance_mode', value: config.maintenanceMode });
-    await message.reply(`🔧 Maintenance mode: ${config.maintenanceMode ? 'ON' : 'OFF'}`);
-    return;
-  }
-  
-  if (command === 'xp') {
-    if (args.length === 2) {
-      const setting = args[1].toLowerCase();
-      if (setting === 'on' || setting === 'off') {
-        config.xpEnabled = setting === 'on';
-        await supabase.from('config').upsert({ key: 'xp_enabled', value: config.xpEnabled });
-        await message.reply(`✨ XP system: ${config.xpEnabled ? 'ENABLED' : 'DISABLED'}`);
-      } else {
-        await message.reply(`Usage: ${config.commandPrefix}xp [on/off]`);
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}xp [on/off]`);
-    }
-    return;
-  }
-  
-  if (command === 'allowall') {
-    if (args.length === 2) {
-      const setting = args[1].toLowerCase();
-      if (setting === 'on' || setting === 'off') {
-        config.allowAll = setting === 'on';
-        await supabase.from('config').upsert({ key: 'allow_all', value: config.allowAll });
-        await message.reply(`👥 Allow all users: ${config.allowAll ? 'ENABLED' : 'DISABLED'}`);
-      } else {
-        await message.reply(`Usage: ${config.commandPrefix}allowall [on/off]`);
-      }
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}allowall [on/off]`);
-    }
-    return;
-  }
-  
-  if (command === 'prefix') {
-    if (args.length === 2) {
-      const newPrefix = args[1];
-      if (newPrefix.length > 3) {
-        await message.reply('❌ Prefix must be 3 characters or less.');
-        return;
-      }
-      
-      config.commandPrefix = newPrefix;
-      await supabase.from('config').upsert({ key: 'command_prefix', value: newPrefix });
-      await message.reply(`✅ Command prefix changed to: ${newPrefix}`);
-    } else {
-      await message.reply(`Usage: ${config.commandPrefix}prefix [new_prefix]\nExample: ${config.commandPrefix}prefix !`);
-    }
-    return;
-  }
-  
-  if (command === 'warn') {
-    if (args.length < 3) {
-      await message.reply(`Usage: ${config.commandPrefix}warn [@user] [reason]`);
+
+    if (command === 'toggle-xp') {
+      config.xpEnabled = !config.xpEnabled;
+      await supabase.from('config').upsert({ key: 'xp_enabled', value: config.xpEnabled });
+      await message.reply(`✅ XP system ${config.xpEnabled ? 'enabled' : 'disabled'}!`);
       return;
     }
-    
-    const userMention = message.mentions.users.first();
-    if (!userMention) {
-      await message.reply('❌ Please mention a valid user.');
+
+    if (command === 'silence') {
+      config.botSilenced = !config.botSilenced;
+      await supabase.from('config').upsert({ key: 'bot_silenced', value: config.botSilenced });
+      await message.reply(`✅ Bot ${config.botSilenced ? 'silenced' : 'unsilenced'}!`);
       return;
     }
-    
-    const reason = args.slice(2).join(' ');
-    const success = await addWarning(userMention.id, reason, userId);
+
+    if (command === 'maintenance') {
+      config.maintenanceMode = !config.maintenanceMode;
+      await supabase.from('config').upsert({ key: 'maintenance_mode', value: config.maintenanceMode });
+      await message.reply(`✅ Maintenance mode ${config.maintenanceMode ? 'enabled' : 'disabled'}!`);
+      return;
+    }
+// ==================== EVENT HANDLERS ====================
+
+// Handle button interactions
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const { customId, user, message } = interaction;
+
+  if (customId === 'giveaway_participate') {
+    const success = await addGiveawayParticipant(message.id, user.id);
     
     if (success) {
-      const warningCount = await getWarningCount(userMention.id);
-      await message.reply(`⚠️ Warning added to ${userMention.username}.\nReason: ${reason}\nTotal warnings: ${warningCount}`);
+      await interaction.reply({ content: '✅ You have been added to the giveaway!', ephemeral: true });
     } else {
-      await message.reply('❌ Error adding warning.');
+      await interaction.reply({ content: '❌ You are already participating in this giveaway!', ephemeral: true });
     }
-    return;
-  }
-  
-  if (command === 'warnings') {
-    if (args.length < 2) {
-      await message.reply(`Usage: ${config.commandPrefix}warnings [@user]`);
+  } else if (customId === 'giveaway_participants') {
+    const participants = await getGiveawayParticipants(message.id);
+    
+    if (participants.length === 0) {
+      await interaction.reply({ content: '📝 No participants yet!', ephemeral: true });
       return;
     }
-    
-    const userMention = message.mentions.users.first();
-    if (!userMention) {
-      await message.reply('❌ Please mention a valid user.');
-      return;
-    }
-    
-    const warningCount = await getWarningCount(userMention.id);
-    await message.reply(`⚠️ ${userMention.username} has ${warningCount} warning(s).`);
-    return;
-  }
-  
-  if (command === 'purge') {
-    if (args.length < 2) {
-      await message.reply(`Usage: ${config.commandPrefix}purge [@user]`);
-      return;
-    }
-    
-    const userMention = message.mentions.users.first();
-    if (!userMention) {
-      await message.reply('❌ Please mention a valid user.');
-      return;
-    }
-    
-    try {
-      await purgeUserXP(userMention.id);
-      await message.reply(`🗑️ XP data purged for ${userMention.username}.`);
-    } catch (error) {
-      await message.reply('❌ Error purging user data.');
-    }
-    return;
-  }
-}
 
-// ==================== MESSAGE HANDLING ====================
+    const participantMentions = participants.map(id => `<@${id}>`).join('\n');
+    const embed = new EmbedBuilder()
+      .setColor('#0099ff')
+      .setTitle('👥 Giveaway Participants')
+      .setDescription(participantMentions)
+      .setFooter({ text: `Total: ${participants.length} participants` });
 
-// Bot ready event
-client.once('ready', async () => {
-  console.log(`${client.user.tag} is online!`);
-  await loadConfig();
-  
-  // Set bot activity
-  client.user.setActivity('DMS Content', { type: 'WATCHING' });
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
 });
 
-// Message create event
+// Handle messages
 client.on('messageCreate', async (message) => {
-  // Ignore bot messages
-  if (message.author.bot) return;
-  
+  if (message.author.bot || !config.botEnabled) return;
+
   const userId = message.author.id;
   const isDM = message.channel.type === ChannelType.DM;
   const isInDedicatedChannel = config.allowedChannels.includes(message.channel.id);
-  
-  // Check for AFK mentions
+
+  // Handle pending item creation (bot admin DM flow)
+  if (isDM && pendingItems.has(userId) && isAdmin(userId)) {
+    const pendingItem = pendingItems.get(userId);
+    
+    if (pendingItem.step === 'waiting_for_name') {
+      pendingItem.name = message.content.trim();
+      pendingItem.step = 'waiting_for_image';
+      pendingItems.set(userId, pendingItem);
+      await message.reply('Now please send the image for this item:');
+      return;
+    } else if (pendingItem.step === 'waiting_for_image') {
+      if (message.attachments.size === 0) {
+        await message.reply('❌ Please send an image!');
+        return;
+      }
+
+      const attachment = message.attachments.first();
+      if (!attachment.contentType?.startsWith('image/')) {
+        await message.reply('❌ Please send a valid image file!');
+        return;
+      }
+
+      const success = await saveGiveawayItem(pendingItem.name, attachment.url);
+      
+      if (success) {
+        await message.reply(`✅ Giveaway item "${pendingItem.name}" has been saved successfully!`);
+      } else {
+        await message.reply('❌ Failed to save giveaway item! Please try again.');
+      }
+      
+      pendingItems.delete(userId);
+      return;
+    }
+  }
+
+  // Award XP for regular messages (not commands)
+  if (!message.content.startsWith(config.commandPrefix)) {
+    await awardXP(userId, message.author.username);
+  }
+
+  // Handle AFK mentions
   if (message.mentions.users.size > 0) {
     for (const [mentionedUserId, mentionedUser] of message.mentions.users) {
+      if (mentionedUserId === userId) continue; // Skip self-mentions
+      
       const afkData = await getAFK(mentionedUserId);
       if (afkData) {
         const afkTime = new Date(afkData.timestamp);
@@ -1111,106 +1274,186 @@ client.on('messageCreate', async (message) => {
         const hours = Math.floor(timeDiff / (1000 * 60 * 60));
         const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
         
-        await message.reply(`${mentionedUser.username} is AFK: ${afkData.reason} (${hours}h ${minutes}m ago)`);
+        let timeString = '';
+        if (hours > 0) timeString += `${hours}h `;
+        timeString += `${minutes}m ago`;
+        
+        await message.reply(`💤 ${mentionedUser.username} is AFK: ${afkData.reason} (${timeString})`);
       }
     }
   }
-  
-  // Remove AFK status if user sends a message
-  const userAFK = await getAFK(userId);
-  if (userAFK) {
+
+  // Remove AFK status when user sends a message
+  const afkData = await getAFK(userId);
+  if (afkData) {
     await removeAFK(userId);
-    await message.reply(`Welcome back ${message.author.username}! Your AFK status has been removed.`);
+    await message.reply(`👋 Welcome back! Your AFK status has been removed.`);
   }
-  
-  // Award XP for messages (only in dedicated channels or DMs)
-  if (config.xpEnabled && (isInDedicatedChannel || isDM)) {
-    await awardXP(userId, message.author.username);
-  }
-  
-  // Handle commands
+
+  // Process commands
   if (message.content.startsWith(config.commandPrefix)) {
     await processCommand(message);
     return;
   }
-  
-  // Handle AFK command without prefix
-  if (message.content.toLowerCase().startsWith('afk ')) {
-    const reason = message.content.slice(4).trim() || 'No reason provided';
-    const success = await setAFK(userId, reason);
-    
-    if (success) {
-      await message.reply(`${message.author.username}, you are now AFK: ${reason}`);
-    } else {
-      await message.reply('❌ Error setting AFK status.');
-    }
-    return;
-  }
-  
-  // Skip bot response if silenced or in maintenance
+
+  // Handle AI responses (only in allowed channels or DMs, and if not silenced)
   if (config.botSilenced || config.maintenanceMode) return;
-  
-  // Skip if bot is not enabled
-  if (!config.botEnabled) return;
-  
-  // Check if message should trigger bot response
-  const shouldRespond = (
-    isDM || // Always respond in DMs
-    (isInDedicatedChannel && (config.allowAll || isWhitelisted(userId))) || // Respond in dedicated channels only if allowed
-    (!isDM && !isInDedicatedChannel && isWhitelisted(userId) && config.allowAll) // Respond to whitelisted users outside dedicated channels only if allowAll is enabled
-  );
+
+  const shouldRespond = isDM || isInDedicatedChannel || config.allowAll;
   
   if (!shouldRespond) return;
+
+  // Check if bot is mentioned or replied to
+  const isMentioned = message.mentions.has(client.user.id);
+  const isReply = message.reference && message.reference.messageId;
   
-  // Check if message mentions the bot
-  const botMentioned = message.mentions.has(client.user) || 
-                      message.content.toLowerCase().includes('dms') ||
-                      message.content.toLowerCase().includes('bot');
-  
-  // Only respond if in DMs, dedicated channels, or if bot is mentioned and user is allowed
-  if (!isDM && !isInDedicatedChannel) return;
-  
-  // Check token limit (skip for whitelisted users)
+  let isReplyToBot = false;
+  if (isReply) {
+    try {
+      const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
+      isReplyToBot = repliedMessage.author.id === client.user.id;
+    } catch (error) {
+      console.error('Error checking replied message:', error);
+    }
+  }
+
+  if (!isMentioned && !isReplyToBot && !isDM) return;
+
+  // Check token limits for non-whitelisted users
   if (!isWhitelisted(userId)) {
     const tokensUsed = await checkTokenUsage(userId);
-    
     if (tokensUsed >= config.tokenLimit) {
-      await message.reply('❌ You have reached your daily token limit. Try again tomorrow!');
+      await message.reply(`❌ You've reached your daily token limit of ${config.tokenLimit}. Try again tomorrow!`);
       return;
     }
   }
-  
+
   try {
     await withTypingIndicator(message.channel, async () => {
-      const response = await generateResponse(message.content, userId);
+      let prompt = message.content;
+      
+      // Remove bot mention from prompt
+      if (isMentioned) {
+        prompt = prompt.replace(/<@!?\d+>/g, '').trim();
+      }
+      
+      if (!prompt) {
+        await message.reply('Hello! How can I help you?');
+        return;
+      }
+
+      const response = await generateResponse(prompt, userId);
       
       if (response.text) {
         await message.reply(response.text);
+      } else {
+        await message.reply('Sorry, I couldn\'t generate a response. Please try again!');
       }
     });
   } catch (error) {
-    console.error('Error processing message:', error);
-    await message.reply('❌ Sorry, I encountered an error processing your message.');
+    console.error('Error generating response:', error);
+    await message.reply('❌ Sorry, I encountered an error. Please try again later!');
   }
 });
 
-// Express routes
+// Update createGiveaway function to include winners count
+async function createGiveaway(guildId, channelId, messageId, itemName, imageUrl, winnersCount = 1) {
+  try {
+    const { data, error } = await supabase
+      .from('active_giveaways')
+      .insert({
+        guild_id: guildId,
+        channel_id: channelId,
+        message_id: messageId,
+        item_name: itemName,
+        image_url: imageUrl,
+        participants: [],
+        winners_count: winnersCount,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Error creating giveaway:', error);
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('Error in createGiveaway:', error);
+    return null;
+  }
+}
+
+// Update endGiveaway function to include winners count
+async function endGiveaway(messageId) {
+  try {
+    const { data: giveaway, error } = await supabase
+      .from('active_giveaways')
+      .select('*')
+      .eq('message_id', messageId)
+      .single();
+    
+    if (error) {
+      console.error('Error fetching giveaway for ending:', error);
+      return null;
+    }
+    
+    const participants = giveaway.participants || [];
+    
+    if (participants.length === 0) {
+      return { winner: null, participants: [], winnersCount: giveaway.winners_count };
+    }
+    
+    // Delete the giveaway from active giveaways
+    await supabase
+      .from('active_giveaways')
+      .delete()
+      .eq('message_id', messageId);
+    
+    return { 
+      winner: null, // Will be handled in the command handler
+      participants, 
+      itemName: giveaway.item_name,
+      winnersCount: giveaway.winners_count || 1
+    };
+  } catch (error) {
+    console.error('Error in endGiveaway:', error);
+    return null;
+  }
+}
+
+// Bot ready event
+client.on('ready', async () => {
+  console.log(`${client.user.tag} is online!`);
+  console.log(`Bot version: ${BOT_VERSION}`);
+  console.log(`Bot owner: ${BOT_OWNER}`);
+  console.log(`Developers: ${BOT_DEVELOPERS}`);
+  
+  // Load configuration from database
+  await loadConfig();
+  
+  // Set bot activity
+  client.user.setActivity('Free Fire Community', { type: 'WATCHING' });
+});
+
+// Express server for health checks
 app.get('/', (req, res) => {
-  res.send('DMS Discord Bot is running!');
+  res.send('Discord bot is running!');
 });
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'healthy',
+    status: 'online',
     uptime: getUptime(),
     version: BOT_VERSION,
     ping: getBotPing()
   });
 });
 
-// Start Express server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Express server running on port ${PORT}`);
 });
 
 // Login to Discord
@@ -1218,13 +1461,16 @@ client.login(process.env.DISCORD_TOKEN);
 
 // Handle process termination
 process.on('SIGINT', () => {
-  console.log('Received SIGINT. Graceful shutdown...');
+  console.log('Shutting down bot...');
   client.destroy();
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  console.log('Received SIGTERM. Graceful shutdown...');
-  client.destroy();
-  process.exit(0);
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+  process.exit(1);
 });
