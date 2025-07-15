@@ -1,5 +1,6 @@
 // ==================== MODULE IMPORTS ====================
 require('dotenv').config();
+const { keepAlive } = require('./server.js');
 const express = require('express');
 const {
     Client,
@@ -14,9 +15,6 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 // ==================== INITIALIZATIONS ====================
-const app = express();
-const PORT = process.env.PORT || 3000;
-
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -389,6 +387,9 @@ client.once('ready', async () => {
     console.log(`[READY] Admin IDs: ${ADMIN_IDS.join(', ')}`);
     console.log('------------------------------------------------------');
 
+    // ADD THIS LINE:
+    keepAlive(); // Start the web server for keep-alive functionality
+
     client.user.setActivity(`DM for help | ${config.commandPrefix}help`, { type: GatewayIntentBits.Watching });
 });
 
@@ -649,10 +650,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // ==================== EXPRESS SERVER & BOT LOGIN ====================
-// (Unchanged from previous full code: app.get, app.listen, client.login, process handlers)
-app.get('/', (req, res) => { res.send(`Bot is alive! Uptime: ${client.user ? getUptime() : 'N/A'}`); });
-app.listen(PORT, () => { console.log(`[EXPRESS] Server listening on port ${PORT}`); });
-
+// (Unchanged from previous full code: app.get, app.listen, client.login, process handlers
 client.login(process.env.DISCORD_TOKEN)
     .then(() => console.log("[LOGIN] Successfully logged into Discord."))
     .catch(error => { console.error("[LOGIN_CRITICAL] Failed to login:", error); process.exit(1); });
